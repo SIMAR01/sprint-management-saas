@@ -53,11 +53,34 @@ export const commonResponses = {
         schema: {
           $ref: "#/components/schemas/ApiError",
         },
-        example: {
-          success: false,
-          message: "Not authorized, token missing",
-          errors: [],
-          stack: null,
+        examples: {
+          tokenMissing: {
+            summary: "Missing Token",
+            value: {
+              success: false,
+              message: "Not authorized, token missing",
+              errors: [],
+              stack: null,
+            },
+          },
+          tokenRevoked: {
+            summary: "Revoked / Blacklisted Token (Logged Out or Refreshed)",
+            value: {
+              success: false,
+              message: "Token has been revoked or invalidated. Please log in again.",
+              errors: [],
+              stack: null,
+            },
+          },
+          sessionTerminated: {
+            summary: "Global Session Terminated",
+            value: {
+              success: false,
+              message: "Session has been terminated across all devices. Please log in again.",
+              errors: [],
+              stack: null,
+            },
+          },
         },
       },
     },

@@ -74,10 +74,19 @@ export class AuthController {
    * Handler for POST /refresh-token
    */
   public static refreshToken = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-    const refreshToken = getCookieValue(req, REFRESH_TOKEN_COOKIE_NAME);
+    const refreshToken = getCookieValue(req, REFRESH_TOKEN_COOKIE_NAME) || req.body?.refreshToken;
 
     if (!refreshToken) {
       throw new ApiError(401, "Refresh token is missing");
+    }
+
+    // Extract optional old access token from Authorization header or request body
+    let oldAccessToken: string | undefined;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      oldAccessToken = authHeader.split(" ")[1];
+    } else if (req.body?.oldAccessToken) {
+      oldAccessToken = req.body.oldAccessToken;
     }
 
     let ip = req.ip || req.headers["x-forwarded-for"]?.toString();
@@ -89,7 +98,8 @@ export class AuthController {
     const { accessToken, newPlainRefreshToken } = await AuthService.refreshUserTokens(
       refreshToken,
       ip,
-      userAgent
+      userAgent,
+      oldAccessToken
     );
 
     // Rotate/Reset cookie with new plain refresh token
@@ -101,7 +111,7 @@ export class AuthController {
     res.status(200).json(
       new ApiResponse(
         200,
-        { accessToken },
+        { accessToken, refreshToken: newPlainRefreshToken },
         "Access token refreshed successfully"
       )
     );
@@ -113,7 +123,7 @@ export class AuthController {
   public static logout = asyncHandler(async (req: Request, res: Response): Promise<void> => {
     const userId = req.user?.uuid?.id;
     const token = req.token;
-    const plainRefreshToken = getCookieValue(req, REFRESH_TOKEN_COOKIE_NAME);
+    const plainRefreshToken = getCookieValue(req, REFRESH_TOKEN_COOKIE_NAME) || req.body?.refreshToken;
 
     if (!userId) {
       throw new ApiError(401, "User session not active");
@@ -121,7 +131,7 @@ export class AuthController {
 
     const { all, sessionId } = req.body || {};
 
-    // Revoke tokens in DB, clear active session in Redis, and blacklist Access Token in Redis
+    // Revoke tokens in DB, clear active session in Redis, and blacklist Access and Refresh Tokens in Redis
     const { loggedOutSessions } = await AuthService.logoutUser({
       userId,
       accessToken: token,

@@ -85,6 +85,7 @@ export class AuthService {
       id: userId,
       email: user.email,
       username: user.username,
+      sessionId,
     });
     const plainRefreshToken = generateRefreshToken({ id: userId, sessionId });
 
@@ -102,6 +103,7 @@ export class AuthService {
       lastActive: new Date().toISOString(),
       createdAt: new Date().toISOString(),
       refreshToken: plainRefreshToken,
+      currentAccessToken: accessToken,
     };
 
     await redisClient.set(sessionKey, JSON.stringify(sessionData), {
@@ -136,15 +138,28 @@ export class AuthService {
 
   /**
    * Refreshes access and refresh tokens using Redis-cached sessions, with MongoDB fallback.
+   * Automatically invalidates both the previous access token and the rotated refresh token in Redis.
    */
   public static async refreshUserTokens(
     plainRefreshToken: string,
     ip?: string,
-    userAgent?: string
+    userAgent?: string,
+    oldAccessToken?: string
   ): Promise<{
     accessToken: string;
     newPlainRefreshToken: string;
   }> {
+    // 0. Check if this refresh token was previously revoked/blacklisted
+    try {
+      const isBlacklisted = await redisClient.get(`blacklist:refresh:${plainRefreshToken}`);
+      if (isBlacklisted) {
+        throw new ApiError(401, "Refresh token has been revoked. Please log in again.");
+      }
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      console.error("Redis error checking refresh token blacklist:", err);
+    }
+
     // 1. Verify token signature statelessly
     const decoded = verifyRefreshToken(plainRefreshToken);
     const userId = decoded.id;
@@ -207,15 +222,62 @@ export class AuthService {
       throw new ApiError(401, "Invalid or expired session / potential reuse detected");
     }
 
-    // 4. Generate rotated tokens (maintaining the same sessionId)
+    // 4. Invalidate the previous Access Token in Redis
+    // A) If oldAccessToken was explicitly passed from client header/body
+    if (oldAccessToken) {
+      try {
+        const decodedOld = jwt.decode(oldAccessToken) as { exp?: number };
+        if (decodedOld?.exp) {
+          const rem = decodedOld.exp - Math.floor(Date.now() / 1000);
+          if (rem > 0) {
+            await redisClient.set(`blacklist:${oldAccessToken}`, "revoked", { EX: rem });
+          }
+        }
+      } catch (err) {
+        console.error("Failed to blacklist old access token during refresh:", err);
+      }
+    }
+
+    // B) Blacklist the currentAccessToken stored in the existing Redis session data
+    if (sessionData && sessionData.currentAccessToken) {
+      try {
+        const decodedPrev = jwt.decode(sessionData.currentAccessToken) as { exp?: number };
+        if (decodedPrev?.exp) {
+          const rem = decodedPrev.exp - Math.floor(Date.now() / 1000);
+          if (rem > 0) {
+            await redisClient.set(`blacklist:${sessionData.currentAccessToken}`, "revoked", { EX: rem });
+          }
+        }
+      } catch (err) {
+        console.error("Failed to blacklist previous session access token during refresh:", err);
+      }
+    }
+
+    // 5. Blacklist the old rotating Refresh Token in Redis (7 days TTL)
+    try {
+      const decodedRefresh = jwt.decode(plainRefreshToken) as { exp?: number };
+      const refreshRemaining = decodedRefresh?.exp
+        ? decodedRefresh.exp - Math.floor(Date.now() / 1000)
+        : 7 * 24 * 60 * 60;
+      if (refreshRemaining > 0) {
+        await redisClient.set(`blacklist:refresh:${plainRefreshToken}`, "rotated", {
+          EX: refreshRemaining,
+        });
+      }
+    } catch (err) {
+      console.error("Failed to blacklist rotated refresh token:", err);
+    }
+
+    // 6. Generate rotated tokens (maintaining the same sessionId)
     const accessToken = generateAccessToken({
       id: userId,
       email: user.email,
       username: user.username,
+      sessionId,
     });
     const newPlainRefreshToken = generateRefreshToken({ id: userId, sessionId });
 
-    // 5. Update/Save session in Redis
+    // 7. Update/Save session in Redis with the new accessToken and refreshToken
     const parsedUA = parseUserAgent(userAgent || (sessionData?.userAgent));
     const updatedSessionData = {
       sessionId,
@@ -227,14 +289,15 @@ export class AuthService {
       device: parsedUA.device,
       lastActive: new Date().toISOString(),
       createdAt: sessionData?.createdAt || new Date().toISOString(),
-      refreshToken: newPlainRefreshToken
+      refreshToken: newPlainRefreshToken,
+      currentAccessToken: accessToken,
     };
 
     await redisClient.set(sessionKey, JSON.stringify(updatedSessionData), {
       EX: 7 * 24 * 60 * 60, // 7 days
     });
 
-    // 6. Update fallback DB token
+    // 8. Update fallback DB token
     const newHashedToken = await hashPassword(newPlainRefreshToken);
     if (!user.refreshTokens) {
       user.refreshTokens = [];
@@ -276,7 +339,7 @@ export class AuthService {
   }
 
   /**
-   * Log out user, removing session key(s) from Redis and optionally blacklisting the Access Token.
+   * Log out user, removing session key(s) from Redis and blacklisting both Access Token and Refresh Token.
    * Returns details of all sessions that were logged out.
    */
   public static async logoutUser(options: {
@@ -299,8 +362,54 @@ export class AuthService {
     const user = await User.findOne({ "uuid.id": userId }).select("+refreshTokens");
     const loggedOutSessions: any[] = [];
 
+    // 1. Blacklist the current Access Token in Redis
+    if (accessToken) {
+      try {
+        const decoded = jwt.decode(accessToken) as { exp?: number };
+        if (decoded && decoded.exp) {
+          const remainingSeconds = decoded.exp - Math.floor(Date.now() / 1000);
+          if (remainingSeconds > 0) {
+            await redisClient.set(`blacklist:${accessToken}`, "logged_out", {
+              EX: remainingSeconds,
+            });
+          }
+        }
+      } catch (error) {
+        console.error("Failed to store access token in Redis blacklist:", error);
+      }
+    }
+
+    // 2. Blacklist the provided Refresh Token in Redis
+    if (plainRefreshToken) {
+      try {
+        const decoded = jwt.decode(plainRefreshToken) as { exp?: number };
+        const remainingSeconds = decoded && decoded.exp
+          ? decoded.exp - Math.floor(Date.now() / 1000)
+          : 7 * 24 * 60 * 60;
+        if (remainingSeconds > 0) {
+          await redisClient.set(`blacklist:refresh:${plainRefreshToken}`, "logged_out", {
+            EX: remainingSeconds,
+          });
+        }
+      } catch (error) {
+        console.error("Failed to store refresh token in Redis blacklist:", error);
+      }
+    }
+
+    // 3. Handle Session Revocation
     if (logoutAll) {
-      // 1. Scan and delete all Redis sessions
+      // Set global revocation timestamp in Redis (covers any tokens across all devices for 15 mins)
+      try {
+        await redisClient.set(
+          `user:revoked_before:${userId}`,
+          Math.floor(Date.now() / 1000).toString(),
+          { EX: 15 * 60 }
+        );
+      } catch (err) {
+        console.error("Failed to set global revocation timestamp:", err);
+      }
+
+      // Scan and delete all Redis sessions
       const pattern = `session:${userId}:*`;
       let cursor = "0";
       const keysToDelete: string[] = [];
@@ -319,8 +428,22 @@ export class AuthService {
           if (val) {
             try {
               const session = JSON.parse(val);
-              const { refreshToken, ...publicSession } = session;
+              const { refreshToken: rToken, currentAccessToken: cAccess, ...publicSession } = session;
               loggedOutSessions.push(publicSession);
+
+              // Blacklist tokens stored in those sessions
+              if (rToken) {
+                await redisClient.set(`blacklist:refresh:${rToken}`, "logged_out", { EX: 7 * 24 * 60 * 60 });
+              }
+              if (cAccess) {
+                const dec = jwt.decode(cAccess) as { exp?: number };
+                if (dec?.exp) {
+                  const rem = dec.exp - Math.floor(Date.now() / 1000);
+                  if (rem > 0) {
+                    await redisClient.set(`blacklist:${cAccess}`, "logged_out", { EX: rem });
+                  }
+                }
+              }
             } catch (err) {
               console.error("Error parsing session data during logout-all:", err);
             }
@@ -329,30 +452,41 @@ export class AuthService {
         await redisClient.del(keysToDelete);
       }
 
-      // 2. Clear all refresh tokens in MongoDB
+      // Clear all refresh tokens in MongoDB
       if (user) {
         user.refreshTokens = [];
         await user.save();
       }
-    } else if (sessionIdToLogout !== undefined) {
+    } else if (sessionIdToLogout !== undefined && sessionIdToLogout !== null) {
       // Logout a specific session by ID
       const sessionKey = `session:${userId}:${sessionIdToLogout}`;
-      const sessionDataStr = sessionIdToLogout ? await redisClient.get(sessionKey) : null;
+      const sessionDataStr = await redisClient.get(sessionKey);
 
       if (!sessionDataStr) {
         throw new ApiError(400, "Session ID is not valid for this user");
       }
 
-      // Delete from Redis
       await redisClient.del(sessionKey);
 
-      // Extract matching token to delete from DB
       try {
         const sessionData = JSON.parse(sessionDataStr);
-        const { refreshToken: tokenToRevoke, ...publicSession } = sessionData;
+        const { refreshToken: tokenToRevoke, currentAccessToken: cAccess, ...publicSession } = sessionData;
         loggedOutSessions.push(publicSession);
 
-        if (user && user.refreshTokens) {
+        if (tokenToRevoke) {
+          await redisClient.set(`blacklist:refresh:${tokenToRevoke}`, "logged_out", { EX: 7 * 24 * 60 * 60 });
+        }
+        if (cAccess) {
+          const dec = jwt.decode(cAccess) as { exp?: number };
+          if (dec?.exp) {
+            const rem = dec.exp - Math.floor(Date.now() / 1000);
+            if (rem > 0) {
+              await redisClient.set(`blacklist:${cAccess}`, "logged_out", { EX: rem });
+            }
+          }
+        }
+
+        if (user && user.refreshTokens && tokenToRevoke) {
           const filteredTokens: string[] = [];
           for (const hashedToken of user.refreshTokens) {
             if (!(await comparePassword(tokenToRevoke, hashedToken))) {
@@ -365,34 +499,66 @@ export class AuthService {
       } catch (err) {
         console.error("Error parsing session data during specific logout:", err);
       }
-    } else if (plainRefreshToken) {
-      // Logout current session using the refresh token
-      let sessionId: string | undefined;
-      try {
-        const decoded = verifyRefreshToken(plainRefreshToken);
-        sessionId = decoded.sessionId;
-      } catch (err) {
-        console.error("Error decoding refresh token during current logout:", err);
+    } else {
+      // Logout single current session: identify sessionId from plainRefreshToken or accessToken
+      let targetSessionId: string | undefined;
+
+      if (plainRefreshToken) {
+        try {
+          const decoded = verifyRefreshToken(plainRefreshToken);
+          targetSessionId = decoded.sessionId;
+        } catch (err) {
+          // Token might be expired or invalid
+        }
       }
 
-      if (sessionId) {
-        const sessionKey = `session:${userId}:${sessionId}`;
+      if (!targetSessionId && accessToken) {
+        try {
+          const decodedAccess = jwt.decode(accessToken) as { sessionId?: string };
+          targetSessionId = decodedAccess?.sessionId;
+        } catch (err) {}
+      }
+
+      if (targetSessionId) {
+        const sessionKey = `session:${userId}:${targetSessionId}`;
         const sessionDataStr = await redisClient.get(sessionKey);
         await redisClient.del(sessionKey);
 
         if (sessionDataStr) {
           try {
             const sessionData = JSON.parse(sessionDataStr);
-            const { refreshToken, ...publicSession } = sessionData;
+            const { refreshToken: tokenToRevoke, currentAccessToken: cAccess, ...publicSession } = sessionData;
             loggedOutSessions.push(publicSession);
+
+            if (tokenToRevoke) {
+              await redisClient.set(`blacklist:refresh:${tokenToRevoke}`, "logged_out", { EX: 7 * 24 * 60 * 60 });
+              if (user && user.refreshTokens) {
+                const filteredTokens: string[] = [];
+                for (const hashedToken of user.refreshTokens) {
+                  if (!(await comparePassword(tokenToRevoke, hashedToken))) {
+                    filteredTokens.push(hashedToken);
+                  }
+                }
+                user.refreshTokens = filteredTokens;
+                await user.save();
+              }
+            }
+
+            if (cAccess && cAccess !== accessToken) {
+              const dec = jwt.decode(cAccess) as { exp?: number };
+              if (dec?.exp) {
+                const rem = dec.exp - Math.floor(Date.now() / 1000);
+                if (rem > 0) {
+                  await redisClient.set(`blacklist:${cAccess}`, "logged_out", { EX: rem });
+                }
+              }
+            }
           } catch (err) {
             console.error("Error parsing session data during current logout:", err);
           }
         }
-      }
-
-      // Remove from MongoDB
-      if (user && user.refreshTokens) {
+      } else if (plainRefreshToken && user && user.refreshTokens) {
+        // Fallback: Remove from MongoDB if sessionId couldn't be resolved
         const filteredTokens: string[] = [];
         for (const hashedToken of user.refreshTokens) {
           if (!(await comparePassword(plainRefreshToken, hashedToken))) {
@@ -401,24 +567,6 @@ export class AuthService {
         }
         user.refreshTokens = filteredTokens;
         await user.save();
-      }
-    }
-
-    // 3. Blacklist current Access Token in Redis
-    if (accessToken) {
-      try {
-        const decoded = jwt.decode(accessToken) as { exp?: number };
-        if (decoded && decoded.exp) {
-          const remainingSeconds = decoded.exp - Math.floor(Date.now() / 1000);
-          if (remainingSeconds > 0) {
-            const blacklistKey = `blacklist:${accessToken}`;
-            await redisClient.set(blacklistKey, "true", {
-              EX: remainingSeconds,
-            });
-          }
-        }
-      } catch (error) {
-        console.error("Failed to store access token in Redis blacklist:", error);
       }
     }
 

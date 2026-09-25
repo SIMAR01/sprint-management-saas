@@ -55,7 +55,7 @@ src/
 
 ## 2. Redis Caching Strategy
 
-To optimize database lookups and prevent token hijacking, Redis is used in three distinct contexts:
+To optimize database lookups and prevent token hijacking, Redis is used in five distinct contexts:
 
 ### A. Active Refresh Session Cache
 - **Key Schema**: `session:{userId}:{sessionId}`
@@ -71,19 +71,32 @@ To optimize database lookups and prevent token hijacking, Redis is used in three
     "device": "String",
     "lastActive": "ISO String",
     "createdAt": "ISO String",
-    "refreshToken": "Plain Refresh Token"
+    "refreshToken": "Plain Rotating Refresh Token",
+    "currentAccessToken": "Current Active JWT Access Token"
   }
   ```
 - **TTL**: `604800 seconds` (7 days)
-- **Flow**: During login, a unique `sessionId` (UUID) is generated and embedded in the refresh token payload. The session details are stored in Redis under the `session:{userId}:{sessionId}` key. During `/refresh-token` requests, the token is decoded statelessly, and the corresponding Redis key is queried. If the refresh token matches, the session is rotated (old deleted, new generated and set). MongoDB is bypassed for active session validation unless there is a Redis cache miss.
+- **Flow**: During login, a unique `sessionId` (UUID) is generated and embedded in the refresh token and access token payloads. The session details are stored in Redis under the `session:{userId}:{sessionId}` key. During `/refresh-token` requests, the token is decoded statelessly, and the corresponding Redis key is queried. If the refresh token matches, the session is rotated (old deleted, new generated and set). MongoDB is bypassed for active session validation unless there is a Redis cache miss.
 
 ### B. Access Token Blacklist
 - **Key Schema**: `blacklist:{accessToken}`
-- **Value**: `"true"`
-- **TTL**: Dynamic (Equal to the remaining duration of the Access Token's 15-minute lifespan)
-- **Flow**: When a user logs out, the access token is cached in Redis for its remaining lifetime. Any request attempting to use a blacklisted token will be rejected with an HTTP 401 response by `auth.middleware.ts`.
+- **Value**: `"logged_out"` or `"revoked"`
+- **TTL**: Dynamic (Equal to the remaining duration of the Access Token's 15-minute lifespan: `exp - now()`)
+- **Flow**: When a user logs out, or when a user rotates their tokens via `/refresh-token`, the old access token is immediately added to the Redis blacklist with a TTL equal to its remaining lifespan. Any subsequent request attempting to use a blacklisted token is rejected with HTTP 401 Unauthorized (`"Token has been revoked or invalidated. Please log in again."`).
 
-### C. Rate Limiter Tracker
+### C. Refresh Token Blacklist
+- **Key Schema**: `blacklist:refresh:{plainRefreshToken}`
+- **Value**: `"logged_out"` or `"rotated"`
+- **TTL**: `604800 seconds` (7 days)
+- **Flow**: When a user logs out or rotates their refresh token, the old refresh token is recorded into the blacklist. If an attacker or stale client attempts to reuse a blacklisted refresh token, the server immediately rejects the request with HTTP 401 Unauthorized and flags potential token reuse.
+
+### D. Global User Revocation Timestamp ("Logout All")
+- **Key Schema**: `user:revoked_before:{userId}`
+- **Value**: Epoch timestamp in seconds (`Math.floor(Date.now() / 1000)`)
+- **TTL**: `900 seconds` (15 minutes, matching the maximum lifespan of any active access token)
+- **Flow**: When a user logs out with `all: true`, this timestamp is stored in Redis. The `protect` middleware compares the JWT `iat` (issued at) claim against this timestamp. Any token issued prior to global logout is instantly rejected across all devices without needing individual token strings.
+
+### E. Rate Limiter Tracker
 - **Key Schema**: `rate-limit:auth:{clientIp}`
 - **Value**: Incremental count
 - **TTL**: `900 seconds` (15 minutes sliding/fixed window)
@@ -95,7 +108,7 @@ To optimize database lookups and prevent token hijacking, Redis is used in three
 
 Socket.IO connections are authenticated during the initial handshake stage.
 
-- **File**: [auth.socket.ts](file:///e:/tekki%20web%20task/project-management-system/backend/src/sockets/auth.socket.ts)
+- **File**: `backend/src/sockets/auth.socket.ts`
 - **Handshake Logic**:
   1. Reads the token from `socket.handshake.auth.token` or headers.
   2. Verifies the token signature statelessly with **0 database lookups**.
@@ -106,63 +119,33 @@ Socket.IO connections are authenticated during the initial handshake stage.
 
 ## 4. API Specification & Payloads
 
-### A. Registration (`POST /api/v1/auth/register`)
+### A. Registration (`POST /api/v1/auth/signup`)
 - **Validation**:
   - `name`: String (2-50 chars)
   - `username`: Lowercase, alphanumeric/underscore (3-30 chars, unique)
   - `email`: Valid lowercase email (unique)
   - `password`: String (6-128 chars)
 - **Logic**: Registers user in MongoDB. Password is encrypted automatically in Mongoose schema pre-save hook using bcrypt (work factor: 12).
-- **Success Response (201)**:
-  ```json
-  {
-    "success": true,
-    "message": "User registered successfully",
-    "data": {
-      "_id": "60d0fe...",
-      "name": "Admin",
-      "username": "admin",
-      "email": "admin@example.com",
-      "createdAt": "2026...",
-      "updatedAt": "2026..."
-    }
-  }
-  ```
+- **Success Response (201)**: Returns user profile (password stripped).
 
 ### B. Login (`POST /api/v1/auth/login`)
 - **Validation**:
   - `emailOrUsername`: String
   - `password`: String
-- **Logic**: Validates credentials. Sets `refreshToken` as an HTTP-only, secure, sameSite `'strict'` cookie. Returns `accessToken` in body. Caches session in Redis.
-- **Success Response (200)**:
-  ```json
-  {
-    "success": true,
-    "message": "Login successful",
-    "data": {
-      "user": {
-        "id": "60d0fe...",
-        "name": "Admin",
-        "username": "admin",
-        "email": "admin@example.com"
-      },
-      "accessToken": "eyJhbGci..."
-    }
-  }
-  ```
+- **Logic**: Validates credentials. Sets `refreshToken` as an HTTP-only, secure, sameSite `'strict'` cookie. Returns `accessToken` in body. Caches session in Redis with `currentAccessToken`.
+- **Swagger UI Integration**: The access token returned in the response is automatically intercepted by Swagger UI and injected into the Bearer Authorization header.
 
 ### C. Token Refresh (`POST /api/v1/auth/refresh-token`)
-- **Logic**: Inspects cookie refresh token. Verifies signature, validates presence in Redis session cache (zero MongoDB hits), deletes old Redis key, issues and sets a new cookie/access token, and saves new session key in Redis.
-- **Success Response (200)**:
-  ```json
-  {
-    "success": true,
-    "message": "Access token refreshed successfully",
-    "data": {
-      "accessToken": "eyJhbGci..."
-    }
-  }
-  ```
+- **Logic**:
+  1. Inspects the cookie `refreshToken` (or optional request body fallback).
+  2. Checks Redis `blacklist:refresh:{token}` to ensure the refresh token is not revoked.
+  3. Statelessly verifies signature and retrieves active session from Redis.
+  4. **Immediate Invalidation of Old Access Token**:
+     - The previous access token stored in the Redis session (`sessionData.currentAccessToken`) is blacklisted with remaining TTL.
+     - If the client passed an old access token in `Authorization: Bearer <oldToken>`, that token is also blacklisted.
+  5. **Refresh Token Blacklisting**: The old refresh token is blacklisted in Redis (`blacklist:refresh:...`) with a 7-day TTL.
+  6. Rotates the session, issues a fresh JWT Access Token and Refresh Token, and updates the cookie and Redis session.
+  7. **Swagger UI Sync**: Automatically updates the Bearer token in Swagger UI.
 
 ### D. Logout (`POST /api/v1/auth/logout`)
 - **Authorization**: Requires Bearer Access Token in header.
@@ -174,52 +157,36 @@ Socket.IO connections are authenticated during the initial handshake stage.
   }
   ```
 - **Logic**:
-  - If `all` is `true`, scans and deletes all Redis session keys matching `session:{userId}:*` and clears all MongoDB refresh tokens.
-  - If `sessionId` is provided:
-    - Verifies if the session exists in Redis under `session:{userId}:{sessionId}`. If not found, throws a `400 Bad Request` error with the message `"Session ID is not valid for this user"`.
-    - Otherwise, deletes the specific key from Redis and filters out the corresponding refresh token from MongoDB.
-  - If neither is provided, terminates the current session (identifying it using the refresh token cookie).
-  - Always blacklists the current Access Token in Redis for its remaining TTL and clears the HTTP-only cookie if the current session or all sessions are logged out.
-- **Success Response (200)**:
-  ```json
-  {
-    "success": true,
-    "message": "Logout successful",
-    "data": {
-      "loggedOutSessions": [
-        {
-          "sessionId": "...",
-          "ip": "...",
-          "browser": "...",
-          "os": "...",
-          "device": "..."
-        }
-      ]
-    }
-  }
-  ```
+  1. **Access Token Blacklist**: Blacklists the current access token in Redis (`blacklist:<token>`) for its remaining TTL.
+  2. **Refresh Token Blacklist**: Blacklists the refresh token in Redis (`blacklist:refresh:<token>`) for 7 days.
+  3. **Global Revocation**: If `all: true`, deletes all Redis sessions `session:{userId}:*`, clears all MongoDB refresh tokens, and writes `user:revoked_before:{userId}` (15 min TTL) to invalidate tokens on all other devices.
+  4. **Single Session Logout**: Deletes `session:{userId}:{sessionId}` from Redis and MongoDB.
+  5. Clears the HTTP-only cookie.
+  6. **Swagger UI Clear**: Automatically triggers `authActions.logout(['BearerAuth'])` in Swagger UI and clears `localStorage`.
 
-### E. Get Current Profile (`GET /api/v1/auth/me`)
+### E. Get Current Profile (`GET /api/v1/auth/profile`)
 - **Authorization**: Requires Bearer Access Token in header.
-- **Success Response (200)**:
-  ```json
-  {
-    "success": true,
-    "message": "User profile fetched successfully",
-    "data": {
-      "_id": "60d0fe...",
-      "name": "Admin",
-      "username": "admin",
-      "email": "admin@example.com",
-      "createdAt": "2026...",
-      "updatedAt": "2026..."
-    }
-  }
-  ```
+- **Verification Flow**:
+  1. Validates that the token is present in the `Authorization` header.
+  2. Queries Redis `blacklist:<token>`. If found, throws `401 Unauthorized: "Token has been revoked or invalidated. Please log in again."`.
+  3. Verifies JWT signature and expiry.
+  4. Checks `user:revoked_before:<userId>`. If issued before revocation, throws `401 Unauthorized`.
+  5. If `sessionId` is in token, verifies session existence in Redis. If expired or logged out, throws `401 Unauthorized`.
+  6. Attaches user profile to `req.user` and proceeds to route handler.
 
 ---
 
-## 5. Global Error Payload Structure
+## 5. Swagger UI Automated Authentication Synchronization
+
+To streamline developer experience and API testing in Swagger UI:
+- **Interception Mechanism**: In `backend/src/config/swagger.ts`, an auto-invoking script is served at `/api/v1/docs/swagger-auth-sync.js` and injected inline into Swagger UI via `customJs` and `customJsStr`.
+- **Login Auto-Authorize**: Intercepts `POST /api/v1/auth/login` (HTTP 200). Extracts `response.data.accessToken` and invokes `window.ui.authActions.authorize({ BearerAuth: { value: token } })`.
+- **Refresh Auto-Update**: Intercepts `POST /api/v1/auth/refresh-token` (HTTP 200) and updates the Bearer authorization with the new access token.
+- **Logout Auto-Clear**: Intercepts `POST /api/v1/auth/logout` (HTTP 200), invokes `window.ui.authActions.logout(['BearerAuth'])`, and removes credentials from `localStorage`.
+
+---
+
+## 6. Global Error Payload Structure
 
 All exceptions flow through `error.middleware.ts` and return standard client structures:
 
@@ -233,4 +200,4 @@ All exceptions flow through `error.middleware.ts` and return standard client str
 ```
 - In `development` mode, `stack` contains the error stack trace.
 - In `production` mode, `stack` is set to `null` and general errors are masked to prevent data leaks.
-- Captures MongoDB duplicate constraints (`code 11000`), casting issues, and validation failures, converting them into standard bad-request/conflict errors.
+- Captures MongoDB duplicate constraints (`code 11000`), casting issues, validation failures, and Redis token invalidations.

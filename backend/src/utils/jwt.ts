@@ -9,6 +9,9 @@ export interface UserTokenPayload {
   id: string;
   email: string;
   username: string;
+  sessionId?: string;
+  iat?: number;
+  exp?: number;
 }
 
 export interface RefreshTokenPayload {
