@@ -1,12 +1,14 @@
+import dotenv from "dotenv";
+dotenv.config();
 import http from "http";
 import { Server } from "socket.io";
 import app from "./app";
-import { env } from "./config/env";
 import { connectDB } from "./config/database";
 import { connectRedis } from "./config/redis";
 import { socketAuthMiddleware } from "./sockets/auth.socket";
+import { setIoInstance, registerProjectSocketHandlers } from "./sockets/project.socket";
 
-const PORT = env.PORT;
+const PORT = process.env.PORT || 5000;
 
 const startServer = async () => {
   try {
@@ -22,10 +24,13 @@ const startServer = async () => {
     // 4. Initialize Socket.IO Server
     const io = new Server(server, {
       cors: {
-        origin: env.CORS_ORIGIN,
+        origin: process.env.CORS_ORIGIN || "*",
         methods: ["GET", "POST"],
       },
     });
+
+    // Save running server instance to the project socket registry
+    setIoInstance(io);
 
     // 5. Register Socket.IO Handshake Authentication Middleware
     io.use(socketAuthMiddleware);
@@ -34,6 +39,9 @@ const startServer = async () => {
     io.on("connection", (socket) => {
       const user = (socket as any).user;
       console.log(`Socket client connected: ${user.username} (ID: ${user.id})`);
+
+      // Register project workspace room membership listeners
+      registerProjectSocketHandlers(io, socket);
 
       socket.on("disconnect", () => {
         console.log(`Socket client disconnected: ${user.username} (ID: ${user.id})`);
