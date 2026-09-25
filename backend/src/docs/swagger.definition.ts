@@ -1,6 +1,8 @@
 import { env } from "../config/env";
 import { commonSchemas } from "./schemas/common.schema";
 import { authSchemas } from "./schemas/auth.schema";
+import { projectSchemas } from "./schemas/project.schema";
+import { taskSchemas } from "./schemas/task.schema";
 import { commonResponses } from "./responses/common.responses";
 import { securitySchemes } from "./security/security";
 import { apiPaths } from "./routes/index";
@@ -41,9 +43,9 @@ The platform enforces a dual-token security model with real-time multi-device se
 
 ---
 
-### Rate Limiting & Protection
-- All authentication endpoints are rate-limited via a Redis sliding window: **100 requests per 15 minutes per IP**.
-- Excessive requests receive an \`HTTP 429 Too Many Requests\` response.
+### Idempotency & Resiliency Engine
+- Write operations (\`POST\`, \`PUT\`, \`PATCH\`, \`DELETE\`) accept an optional header: \`X-Idempotency-Key: <UUID>\`.
+- Prevents duplicate executions on network retries using deterministic SHA-256 payload hashing and Redis response caching (300s TTL).
 
 ---
 
@@ -52,7 +54,7 @@ The platform enforces a dual-token security model with real-time multi-device se
 2. Copy the \`accessToken\` from the JSON response.
 3. Click the green **Authorize** button at the top-right of this page.
 4. Enter \`Bearer <accessToken>\` or simply paste your JWT into the \`BearerAuth\` input and click **Authorize**.
-5. You can now execute protected endpoints (such as \`GET /api/v1/auth/profile\` and \`GET /api/v1/auth/sessions\`) using **Try it out**!
+5. You can now execute protected endpoints (such as \`GET /api/v1/projects\` and \`GET /api/v1/projects/:projectId/tasks\`) using **Try it out**!
     `,
     contact: {
       name: "TeamFlow Engineering Team",
@@ -82,21 +84,16 @@ The platform enforces a dual-token security model with real-time multi-device se
       description: "User registration, login, token rotation, and multi-device session management.",
     },
     {
-      name: "Health",
-      description: "Health checks and operational status monitoring.",
-    },
-    // Future Tags for Next Phases
-    {
-      name: "Workspaces",
-      description: "Tenant workspaces and organization management (Coming in Phase 3).",
-    },
-    {
       name: "Projects",
-      description: "Projects and agile initiative boards (Coming in Phase 3).",
+      description: "Project workspace management, RBAC member invitations/evictions, archiving, and audit timeline.",
     },
     {
       name: "Tasks",
-      description: "Sprint task items, assignment, and status workflows (Coming in Phase 4).",
+      description: "Sprint task items, status workflows, Kanban filtering, bulk operations, and event history.",
+    },
+    {
+      name: "Health",
+      description: "Health checks and operational status monitoring.",
     },
   ],
   components: {
@@ -104,6 +101,8 @@ The platform enforces a dual-token security model with real-time multi-device se
     schemas: {
       ...commonSchemas,
       ...authSchemas,
+      ...projectSchemas,
+      ...taskSchemas,
     },
     responses: {
       ...commonResponses,
