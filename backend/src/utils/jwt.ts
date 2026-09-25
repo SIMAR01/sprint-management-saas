@@ -1,12 +1,9 @@
 import jwt from "jsonwebtoken";
 import { ACCESS_TOKEN_EXPIRY, REFRESH_TOKEN_EXPIRY } from "./constants";
 import { ApiError } from "./ApiError";
+import { env } from "../config/env";
 
-// Ensure the JWT_SECRET is loaded
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
-  throw new Error("JWT_SECRET environment variable is missing!");
-}
+const JWT_SECRET = env.JWT_SECRET;
 
 export interface UserTokenPayload {
   id: string;
@@ -25,7 +22,7 @@ export interface RefreshTokenPayload {
  */
 export const generateAccessToken = (payload: UserTokenPayload): string => {
   return jwt.sign(payload, JWT_SECRET, {
-    expiresIn: ACCESS_TOKEN_EXPIRY,
+    expiresIn: ACCESS_TOKEN_EXPIRY as any,
   });
 };
 
@@ -35,7 +32,7 @@ export const generateAccessToken = (payload: UserTokenPayload): string => {
  */
 export const generateRefreshToken = (payload: RefreshTokenPayload): string => {
   return jwt.sign(payload, JWT_SECRET, {
-    expiresIn: REFRESH_TOKEN_EXPIRY,
+    expiresIn: REFRESH_TOKEN_EXPIRY as any,
   });
 };
 

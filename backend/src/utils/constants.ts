@@ -1,4 +1,5 @@
 import { CookieOptions } from "express";
+import { env } from "../config/env";
 
 /**
  * Cookie options for setting HTTP-only refresh tokens.
@@ -6,18 +7,18 @@ import { CookieOptions } from "express";
  */
 export const COOKIE_OPTIONS: CookieOptions = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
+  secure: env.isProduction,
   sameSite: "strict",
 };
 
 /**
  * Cookie name used to store the Refresh Token.
  */
-export const REFRESH_TOKEN_COOKIE_NAME = "refreshToken";
+export const REFRESH_TOKEN_COOKIE_NAME = env.REFRESH_TOKEN_COOKIE_NAME;
 
 /**
  * Expiration times for JWTs.
  */
-export const ACCESS_TOKEN_EXPIRY = "15m"; // 15 minutes
-export const REFRESH_TOKEN_EXPIRY = "7d";   // 7 days
-export const REFRESH_TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
+export const ACCESS_TOKEN_EXPIRY = env.ACCESS_TOKEN_EXPIRY;
+export const REFRESH_TOKEN_EXPIRY = env.REFRESH_TOKEN_EXPIRY;
+export const REFRESH_TOKEN_EXPIRY_MS = env.REFRESH_TOKEN_EXPIRY_MS;

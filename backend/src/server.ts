@@ -1,13 +1,12 @@
-import dotenv from "dotenv";
-dotenv.config();
 import http from "http";
 import { Server } from "socket.io";
 import app from "./app";
+import { env } from "./config/env";
 import { connectDB } from "./config/database";
 import { connectRedis } from "./config/redis";
 import { socketAuthMiddleware } from "./sockets/auth.socket";
 
-const PORT = process.env.PORT || 5000;
+const PORT = env.PORT;
 
 const startServer = async () => {
   try {
@@ -23,7 +22,7 @@ const startServer = async () => {
     // 4. Initialize Socket.IO Server
     const io = new Server(server, {
       cors: {
-        origin: process.env.CORS_ORIGIN || "*",
+        origin: env.CORS_ORIGIN,
         methods: ["GET", "POST"],
       },
     });

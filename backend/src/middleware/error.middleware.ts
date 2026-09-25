@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import { ApiError } from "../utils/ApiError";
+import { env } from "../config/env";
 
 /**
  * Global Express error handling middleware.
@@ -67,7 +68,7 @@ export const errorHandler = (
     }
     // Default fallback error
     else {
-      message = process.env.NODE_ENV === "production" ? "Something went wrong" : message;
+      message = env.isProduction ? "Something went wrong" : message;
       error = new ApiError(statusCode, message, [], err.stack);
     }
   }
@@ -77,7 +78,7 @@ export const errorHandler = (
     success: false,
     message: error.message,
     errors: error.errors || [],
-    stack: process.env.NODE_ENV === "development" ? error.stack : null,
+    stack: env.isDevelopment ? error.stack : null,
   };
 
   res.status(error.statusCode).json(responsePayload);
