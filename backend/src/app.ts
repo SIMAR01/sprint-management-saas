@@ -3,11 +3,15 @@ import cors from "cors";
 import router from "./routes/index";
 import { errorHandler } from "./middleware/error.middleware";
 import { ApiError } from "./utils/ApiError";
+import { correlationMiddleware } from "./middleware/correlation.middleware";
 import { authRateLimiter } from "./middleware/rateLimit.middleware";
 import { env } from "./config/env";
 import { setupSwagger } from "./config/swagger";
 
 const app = express();
+
+// Correlation ID Tracking Middleware (Runs on all incoming requests)
+app.use(correlationMiddleware);
 
 // Global Middlewares
 app.use(
@@ -15,7 +19,8 @@ app.use(
     origin: env.CORS_ORIGIN,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization", "x-idempotency-key"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-idempotency-key", "x-correlation-id"],
+    exposedHeaders: ["x-correlation-id"],
   })
 );
 app.use(express.json({ limit: "16kb" }));

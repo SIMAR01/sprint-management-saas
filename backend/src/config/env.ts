@@ -15,6 +15,11 @@ export interface EnvironmentConfig {
   CORS_ORIGIN: string;
   MONGODB_URI: string;
   REDIS_URL: string;
+  REDIS_HOST: string;
+  REDIS_PORT: number;
+  REDIS_PASSWORD?: string;
+  REDIS_DB: number;
+  BULLMQ_CONCURRENCY: number;
   JWT_SECRET: string;
   ACCESS_TOKEN_EXPIRY: string;
   REFRESH_TOKEN_EXPIRY: string;
@@ -86,12 +91,23 @@ const adminEmails = adminEmailsRaw
   ? adminEmailsRaw.split(",").map((e) => e.trim().toLowerCase()).filter(Boolean)
   : ["admin@teamflow.app"];
 
+const redisHost = process.env.REDIS_HOST || defaultRedisHost;
+const redisPort = parseInt(process.env.REDIS_PORT || "6379", 10);
+const redisPassword = process.env.REDIS_PASSWORD || undefined;
+const redisDb = parseInt(process.env.REDIS_DB || "0", 10);
+const bullMqConcurrency = parseInt(process.env.BULLMQ_CONCURRENCY || "10", 10);
+
 export const env: EnvironmentConfig = {
   NODE_ENV: nodeEnv,
   PORT: isNaN(port) ? 5000 : port,
   CORS_ORIGIN: process.env.CORS_ORIGIN || "*",
   MONGODB_URI: mongoUri,
   REDIS_URL: redisUrl,
+  REDIS_HOST: redisHost,
+  REDIS_PORT: isNaN(redisPort) ? 6379 : redisPort,
+  REDIS_PASSWORD: redisPassword,
+  REDIS_DB: isNaN(redisDb) ? 0 : redisDb,
+  BULLMQ_CONCURRENCY: isNaN(bullMqConcurrency) ? 10 : bullMqConcurrency,
   JWT_SECRET: jwtSecret,
   ACCESS_TOKEN_EXPIRY: process.env.ACCESS_TOKEN_EXPIRY || "15m",
   REFRESH_TOKEN_EXPIRY: process.env.REFRESH_TOKEN_EXPIRY || "7d",

@@ -7,6 +7,8 @@ import { emitProjectEvent, evictUserFromProject, notifyUserOfInvite } from "../s
 import { ApiError } from "../utils/ApiError";
 import { EventService } from "./event.service";
 import { NotificationService } from "./notification.service";
+import { addAuditJob } from "../queues/audit.queue";
+import { CacheUtil } from "../utils/cache";
 
 export class ProjectService {
     /**
@@ -15,7 +17,8 @@ export class ProjectService {
     public static async createProject(
         name: string,
         description: string | undefined,
-        ownerId: string
+        ownerId: string,
+        context?: { ip?: string; userAgent?: string; correlationId?: string }
     ): Promise<IProject> {
         const trimmedName = name.trim();
         const existingProject = await Project.findOne({ name: trimmedName });
@@ -33,7 +36,10 @@ export class ProjectService {
 
         const savedProject = await project.save();
 
-        // 2. Record audit log event
+        // 2. Invalidate project cache
+        await CacheUtil.invalidateProjectCache(savedProject.projectId);
+
+        // 3. Record event sourcing log (backward compatibility)
         await EventService.recordEvent(
             savedProject.projectId,
             "PROJECT_CREATED",
@@ -41,13 +47,44 @@ export class ProjectService {
             ownerId
         );
 
-        // 3. Emit real-time creation event (owner's workspace list update)
+        // 4. Asynchronously enqueue immutable audit log via BullMQ
+        const ownerUser = await User.findOne({ "uuid.id": ownerId });
+        await addAuditJob({
+            action: "PROJECT_CREATED",
+            actor: {
+                userId: ownerId,
+                email: ownerUser?.email || "unknown@teamflow.app",
+                role: "ProjectManager",
+            },
+            resource: {
+                type: "PROJECT",
+                id: savedProject.projectId,
+                name: savedProject.name,
+            },
+            context: {
+                ip: context?.ip,
+                userAgent: context?.userAgent,
+                correlationId: context?.correlationId,
+            },
+            diff: {
+                after: {
+                    name: savedProject.name,
+                    description: savedProject.description,
+                    owner: savedProject.owner,
+                },
+            },
+            metadata: {
+                projectId: savedProject.projectId,
+            },
+        });
+
+        // 5. Emit real-time creation event (owner's workspace list update)
         emitProjectEvent(savedProject.projectId, "project:created", {
             projectId: savedProject.projectId,
             name: savedProject.name,
         });
 
-        // 4. Send notifications and emails to Admins and Project Manager
+        // 6. Asynchronously send notifications and emails via BullMQ
         NotificationService.notifyProjectCreated(
             savedProject.projectId,
             savedProject.name,
@@ -65,7 +102,8 @@ export class ProjectService {
         projectId: string,
         name: string | undefined,
         description: string | undefined,
-        actorId: string
+        actorId: string,
+        context?: { ip?: string; userAgent?: string; correlationId?: string }
     ): Promise<IProject> {
         const project = await Project.findOne({ projectId, isDeleted: { $ne: true } });
         if (!project) {
@@ -91,6 +129,9 @@ export class ProjectService {
 
         const updatedProject = await project.save();
 
+        // Invalidate cached project data
+        await CacheUtil.invalidateProjectCache(projectId);
+
         // Record event sourcing log
         await EventService.recordEvent(
             projectId,
@@ -101,6 +142,34 @@ export class ProjectService {
             },
             actorId
         );
+
+        // Asynchronously enqueue audit log via BullMQ
+        const actorUser = await User.findOne({ "uuid.id": actorId });
+        await addAuditJob({
+            action: "PROJECT_UPDATED",
+            actor: {
+                userId: actorId,
+                email: actorUser?.email || "unknown@teamflow.app",
+                role: "ProjectManager",
+            },
+            resource: {
+                type: "PROJECT",
+                id: projectId,
+                name: updatedProject.name,
+            },
+            context: {
+                ip: context?.ip,
+                userAgent: context?.userAgent,
+                correlationId: context?.correlationId,
+            },
+            diff: {
+                before: { name: originalName, description: originalDescription },
+                after: { name: updatedProject.name, description: updatedProject.description },
+            },
+            metadata: {
+                projectId,
+            },
+        });
 
         // Notify members real-time
         emitProjectEvent(projectId, "project:updated", {
@@ -117,7 +186,8 @@ export class ProjectService {
      */
     public static async archiveProject(
         projectId: string,
-        actorId: string
+        actorId: string,
+        context?: { ip?: string; userAgent?: string; correlationId?: string }
     ): Promise<IProject> {
         const project = await Project.findOne({ projectId, isDeleted: { $ne: true } });
         if (!project) {
@@ -131,8 +201,37 @@ export class ProjectService {
         project.isArchived = true;
         const updatedProject = await project.save();
 
+        // Invalidate cached project data
+        await CacheUtil.invalidateProjectCache(projectId);
+
         // Record event
         await EventService.recordEvent(projectId, "PROJECT_ARCHIVED", {}, actorId);
+
+        // Asynchronously enqueue audit log
+        const actorUser = await User.findOne({ "uuid.id": actorId });
+        await addAuditJob({
+            action: "PROJECT_ARCHIVED",
+            actor: {
+                userId: actorId,
+                email: actorUser?.email || "unknown@teamflow.app",
+                role: "ProjectManager",
+            },
+            resource: {
+                type: "PROJECT",
+                id: projectId,
+                name: project.name,
+            },
+            context: {
+                ip: context?.ip,
+                userAgent: context?.userAgent,
+                correlationId: context?.correlationId,
+            },
+            diff: {
+                before: { isArchived: false },
+                after: { isArchived: true },
+            },
+            metadata: { projectId },
+        });
 
         // Notify members real-time
         emitProjectEvent(projectId, "project:archived", { projectId });
@@ -153,7 +252,8 @@ export class ProjectService {
      */
     public static async deleteProject(
         projectId: string,
-        actorId: string
+        actorId: string,
+        context?: { ip?: string; userAgent?: string; correlationId?: string }
     ): Promise<{ success: boolean }> {
         const project = await Project.findOne({ projectId, isDeleted: { $ne: true } });
         if (!project) {
@@ -161,20 +261,47 @@ export class ProjectService {
         }
 
         const projectName = project.name;
-
-        // Check if the project has tasks inside (either active or deleted, check all tasks)
         const taskCount = await Task.countDocuments({ projectId });
 
+        let deletionType = "hard";
         if (taskCount === 0) {
-            // No tasks -> delete from database permanently
             await Project.deleteOne({ projectId });
             await EventService.recordEvent(projectId, "PROJECT_DELETED", { deletionType: "hard" }, actorId);
         } else {
-            // Has tasks -> update "isDeleted" to true for the project and all its tasks
+            deletionType = "soft";
             await Project.updateOne({ projectId }, { $set: { isDeleted: true } });
             await Task.updateMany({ projectId }, { $set: { isDeleted: true } });
             await EventService.recordEvent(projectId, "PROJECT_DELETED", { deletionType: "soft" }, actorId);
         }
+
+        // Invalidate cached project data
+        await CacheUtil.invalidateProjectCache(projectId);
+
+        // Asynchronously enqueue audit log
+        const actorUser = await User.findOne({ "uuid.id": actorId });
+        await addAuditJob({
+            action: "PROJECT_DELETED",
+            actor: {
+                userId: actorId,
+                email: actorUser?.email || "unknown@teamflow.app",
+                role: "ProjectManager",
+            },
+            resource: {
+                type: "PROJECT",
+                id: projectId,
+                name: projectName,
+            },
+            context: {
+                ip: context?.ip,
+                userAgent: context?.userAgent,
+                correlationId: context?.correlationId,
+            },
+            diff: {
+                before: { isDeleted: false },
+                after: { isDeleted: true, deletionType },
+            },
+            metadata: { projectId, taskCount, deletionType },
+        });
 
         // Emit deletion event to room
         emitProjectEvent(projectId, "project:deleted", { projectId });
@@ -197,7 +324,8 @@ export class ProjectService {
         projectId: string,
         emailOrUsername: string,
         role: "ProjectManager" | "TeamMember",
-        actorId: string
+        actorId: string,
+        context?: { ip?: string; userAgent?: string; correlationId?: string }
     ): Promise<IProject> {
         const project = await Project.findOne({ projectId, isDeleted: { $ne: true } });
         if (!project) {
@@ -208,7 +336,6 @@ export class ProjectService {
             throw new ApiError(400, "Cannot invite members to an archived workspace");
         }
 
-        // Find the user to invite
         const queryTerm = emailOrUsername.toLowerCase().trim();
         const invitee = await User.findOne({
             $or: [{ email: queryTerm }, { username: queryTerm }],
@@ -219,16 +346,16 @@ export class ProjectService {
         }
 
         const inviteeId = invitee.uuid.id;
-
-        // Check if user is already a member
         const isAlreadyMember = project.members.some((m) => m.userId === inviteeId);
         if (isAlreadyMember) {
             throw new ApiError(409, "User is already a member of this project workspace");
         }
 
-        // Add user to project
         project.members.push({ userId: inviteeId, role });
         const updatedProject = await project.save();
+
+        // Invalidate cached project data
+        await CacheUtil.invalidateProjectCache(projectId);
 
         // Record event sourcing audit log
         await EventService.recordEvent(
@@ -242,6 +369,33 @@ export class ProjectService {
             },
             actorId
         );
+
+        // Asynchronously enqueue audit log
+        const actorUser = await User.findOne({ "uuid.id": actorId });
+        await addAuditJob({
+            action: "PROJECT_MEMBER_INVITED",
+            actor: {
+                userId: actorId,
+                email: actorUser?.email || "unknown@teamflow.app",
+                role: "ProjectManager",
+            },
+            resource: {
+                type: "PROJECT",
+                id: projectId,
+                name: project.name,
+            },
+            context: {
+                ip: context?.ip,
+                userAgent: context?.userAgent,
+                correlationId: context?.correlationId,
+            },
+            metadata: {
+                inviteeId,
+                inviteeEmail: invitee.email,
+                inviteeUsername: invitee.username,
+                role,
+            },
+        });
 
         // Notify existing project room members
         emitProjectEvent(projectId, "member:invited", {
@@ -275,7 +429,8 @@ export class ProjectService {
     public static async removeMember(
         projectId: string,
         targetUserId: string,
-        actorId: string
+        actorId: string,
+        context?: { ip?: string; userAgent?: string; correlationId?: string }
     ): Promise<IProject> {
         const project = await Project.findOne({ projectId, isDeleted: { $ne: true } });
         if (!project) {
@@ -290,17 +445,17 @@ export class ProjectService {
             throw new ApiError(400, "Operation rejected: The workspace owner cannot be removed");
         }
 
-        // Verify that target user is a member
         const memberIndex = project.members.findIndex((m) => m.userId === targetUserId);
         if (memberIndex === -1) {
             throw new ApiError(404, "User is not a member of this project workspace");
         }
 
         const projectName = project.name;
-
-        // Remove from members array
         project.members.splice(memberIndex, 1);
         const updatedProject = await project.save();
+
+        // Invalidate cached project data
+        await CacheUtil.invalidateProjectCache(projectId);
 
         // Record event sourcing audit log
         await EventService.recordEvent(
@@ -309,6 +464,30 @@ export class ProjectService {
             { targetUserId },
             actorId
         );
+
+        // Asynchronously enqueue audit log
+        const actorUser = await User.findOne({ "uuid.id": actorId });
+        await addAuditJob({
+            action: "PROJECT_MEMBER_REMOVED",
+            actor: {
+                userId: actorId,
+                email: actorUser?.email || "unknown@teamflow.app",
+                role: "ProjectManager",
+            },
+            resource: {
+                type: "PROJECT",
+                id: projectId,
+                name: projectName,
+            },
+            context: {
+                ip: context?.ip,
+                userAgent: context?.userAgent,
+                correlationId: context?.correlationId,
+            },
+            metadata: {
+                targetUserId,
+            },
+        });
 
         // Notify project workspace room that a member was removed
         emitProjectEvent(projectId, "member:removed", {
@@ -399,6 +578,12 @@ export class ProjectService {
      * Retrieves the project timeline showing all chronological events (both project and task events).
      */
     public static async getProjectTimeline(projectId: string): Promise<any[]> {
+        const cacheKey = `cache:project:${projectId}:timeline`;
+        const cachedTimeline = await CacheUtil.get<any[]>(cacheKey);
+        if (cachedTimeline) {
+            return cachedTimeline;
+        }
+
         const projectEvents = await ProjectEvent.find({ projectId }).lean();
         const taskEvents = await TaskEvent.find({ projectId }).lean();
 
@@ -443,8 +628,10 @@ export class ProjectService {
             })),
         ];
 
-        // Sort chronologically (oldest first)
         mergedEvents.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+        // Cache timeline for 30 seconds
+        await CacheUtil.set(cacheKey, mergedEvents, 30);
 
         return mergedEvents;
     }

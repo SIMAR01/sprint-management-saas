@@ -4,6 +4,7 @@ import { authSchemas } from "./schemas/auth.schema";
 import { projectSchemas } from "./schemas/project.schema";
 import { taskSchemas } from "./schemas/task.schema";
 import { notificationSchemas } from "./schemas/notification.schema";
+import { auditSchemas } from "./schemas/audit.schema";
 import { commonResponses } from "./responses/common.responses";
 import { securitySchemes } from "./security/security";
 import { apiPaths } from "./routes/index";
@@ -47,6 +48,12 @@ The platform enforces a dual-token security model with real-time multi-device se
 ### Idempotency & Resiliency Engine
 - Write operations (\`POST\`, \`PUT\`, \`PATCH\`, \`DELETE\`) accept an optional header: \`X-Idempotency-Key: <UUID>\`.
 - Prevents duplicate executions on network retries using deterministic SHA-256 payload hashing and Redis response caching (300s TTL).
+
+---
+
+### End-to-End Request Correlation & Audit Pipeline
+- Every request is tagged with an \`x-correlation-id\` UUID header.
+- All write mutations dispatch immutable audit jobs asynchronously through BullMQ and Dockerized Redis without blocking HTTP client response times.
 
 ---
 
@@ -97,6 +104,10 @@ The platform enforces a dual-token security model with real-time multi-device se
       description: "In-app website inbox notifications, unread counts, seen/unseen state management, and SendGrid email notifications.",
     },
     {
+      name: "Audit Logs",
+      description: "Production-grade immutable audit trails with request correlation tracing and diff inspections.",
+    },
+    {
       name: "Health",
       description: "Health checks and operational status monitoring.",
     },
@@ -109,6 +120,7 @@ The platform enforces a dual-token security model with real-time multi-device se
       ...projectSchemas,
       ...taskSchemas,
       ...notificationSchemas,
+      ...auditSchemas,
     },
     responses: {
       ...commonResponses,

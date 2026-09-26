@@ -35,9 +35,7 @@ export async function withIdempotency<T>(
 
     try {
         // Cache the result for subsequent duplicate requests
-        await redisClient.set(cacheKey, JSON.stringify(result), {
-            EX: ttl,
-        });
+        await redisClient.set(cacheKey, JSON.stringify(result), "EX", ttl);
         console.log(`[Idempotency] Cached response for key: ${key}`);
     } catch (error) {
         console.error("[Idempotency] Failed to write to Redis cache:", error);
