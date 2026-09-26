@@ -30,10 +30,16 @@ export interface EnvironmentConfig {
   CLOUDINARY_API_KEY: string;
   CLOUDINARY_API_SECRET: string;
   CLOUDINARY_FOLDER: string;
+  SENDGRID_API_KEY: string;
+  SENDGRID_FROM_EMAIL: string;
+  SENDGRID_FROM_NAME: string;
+  APP_URL: string;
+  ADMIN_EMAILS: string[];
   isProduction: boolean;
   isDevelopment: boolean;
   isTest: boolean;
   isDocker: boolean;
+  isSendGridConfigured: boolean;
 }
 
 const nodeEnv = (process.env.NODE_ENV || "development").toLowerCase() as "development" | "production" | "test";
@@ -74,6 +80,12 @@ const swaggerEnabled = process.env.SWAGGER_ENABLED !== undefined
   ? process.env.SWAGGER_ENABLED === "true" 
   : true;
 
+const sendGridApiKey = process.env.SENDGRID_API_KEY || "";
+const adminEmailsRaw = process.env.ADMIN_EMAILS || "";
+const adminEmails = adminEmailsRaw
+  ? adminEmailsRaw.split(",").map((e) => e.trim().toLowerCase()).filter(Boolean)
+  : ["admin@teamflow.app"];
+
 export const env: EnvironmentConfig = {
   NODE_ENV: nodeEnv,
   PORT: isNaN(port) ? 5000 : port,
@@ -95,8 +107,14 @@ export const env: EnvironmentConfig = {
   CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY || "",
   CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET || "",
   CLOUDINARY_FOLDER: process.env.CLOUDINARY_FOLDER || "teamflow/tasks",
+  SENDGRID_API_KEY: sendGridApiKey,
+  SENDGRID_FROM_EMAIL: process.env.SENDGRID_FROM_EMAIL || "notifications@teamflow.app",
+  SENDGRID_FROM_NAME: process.env.SENDGRID_FROM_NAME || "TeamFlow Notifications",
+  APP_URL: process.env.APP_URL || "http://localhost:5173",
+  ADMIN_EMAILS: adminEmails,
   isProduction: isProd,
   isDevelopment: isDev,
   isTest: isTest,
   isDocker: isDocker,
+  isSendGridConfigured: Boolean(sendGridApiKey && sendGridApiKey.startsWith("SG.")),
 };

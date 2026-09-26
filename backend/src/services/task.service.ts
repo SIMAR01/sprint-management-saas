@@ -5,6 +5,7 @@ import { User } from "../models/user.model";
 import { emitProjectEvent } from "../sockets/project.socket";
 import { ApiError } from "../utils/ApiError";
 import { deleteFromCloudinary } from "../utils/cloudinary";
+import { NotificationService } from "./notification.service";
 
 /**
  * NOTE ON TRANSACTIONS:
@@ -155,6 +156,19 @@ export class TaskService {
 
         // 3. Real-time broadcast to all project room members
         emitProjectEvent(projectId, "task:created", enrichedTask);
+
+        // 4. Dispatch in-app notifications and SendGrid emails
+        NotificationService.notifyTaskCreated(
+            projectId,
+            project.name,
+            savedTask.taskId,
+            savedTask.title,
+            actorId,
+            savedTask.assigneeId,
+            savedTask.status,
+            savedTask.images?.length || 0,
+            Boolean(savedTask.videoUrl)
+        ).catch(() => {});
 
         return enrichedTask;
     }
@@ -395,6 +409,27 @@ export class TaskService {
 
         emitProjectEvent(projectId, "task:updated", enrichedTask);
 
+        // Dispatch in-app notifications and SendGrid emails
+        NotificationService.notifyTaskUpdated({
+            projectId,
+            projectName: project.name,
+            taskId,
+            taskTitle: enrichedTask.title,
+            actorId,
+            updates: {
+                status: fieldsToUpdate.status,
+                previousStatus: existingTask.status,
+                assigneeId: fieldsToUpdate.assigneeId,
+                previousAssigneeId: existingTask.assigneeId,
+                images: fieldsToUpdate.images,
+                previousImages: existingTask.images,
+                videoUrl: fieldsToUpdate.videoUrl,
+                previousVideoUrl: existingTask.videoUrl,
+                title: fieldsToUpdate.title,
+                description: fieldsToUpdate.description,
+            },
+        }).catch(() => {});
+
         return enrichedTask;
     }
 
@@ -456,6 +491,16 @@ export class TaskService {
             projectId,
             actorId,
         });
+
+        // 4. Dispatch in-app notifications and SendGrid emails
+        NotificationService.notifyTaskDeleted(
+            projectId,
+            project.name,
+            taskId,
+            existingTask.title,
+            actorId,
+            existingTask.assigneeId
+        ).catch(() => {});
 
         return { success: true };
     }
@@ -537,6 +582,18 @@ export class TaskService {
             projectId,
             actorId,
         });
+
+        // 4. Dispatch in-app notifications and SendGrid emails
+        for (const t of tasks) {
+            NotificationService.notifyTaskDeleted(
+                projectId,
+                project.name,
+                t.taskId,
+                t.title,
+                actorId,
+                t.assigneeId
+            ).catch(() => {});
+        }
 
         return { success: true };
     }

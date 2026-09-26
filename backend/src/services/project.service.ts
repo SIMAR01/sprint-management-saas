@@ -6,6 +6,7 @@ import { User } from "../models/user.model";
 import { emitProjectEvent, evictUserFromProject, notifyUserOfInvite } from "../sockets/project.socket";
 import { ApiError } from "../utils/ApiError";
 import { EventService } from "./event.service";
+import { NotificationService } from "./notification.service";
 
 export class ProjectService {
     /**
@@ -45,6 +46,14 @@ export class ProjectService {
             projectId: savedProject.projectId,
             name: savedProject.name,
         });
+
+        // 4. Send notifications and emails to Admins and Project Manager
+        NotificationService.notifyProjectCreated(
+            savedProject.projectId,
+            savedProject.name,
+            ownerId,
+            description
+        ).catch(() => {});
 
         return savedProject;
     }
@@ -128,6 +137,14 @@ export class ProjectService {
         // Notify members real-time
         emitProjectEvent(projectId, "project:archived", { projectId });
 
+        // Dispatch in-app notifications and SendGrid emails
+        NotificationService.notifyProjectDeletedOrArchived(
+            projectId,
+            project.name,
+            actorId,
+            "ARCHIVED"
+        ).catch(() => {});
+
         return updatedProject;
     }
 
@@ -142,6 +159,8 @@ export class ProjectService {
         if (!project) {
             throw new ApiError(404, "Project workspace not found or has been deleted");
         }
+
+        const projectName = project.name;
 
         // Check if the project has tasks inside (either active or deleted, check all tasks)
         const taskCount = await Task.countDocuments({ projectId });
@@ -159,6 +178,14 @@ export class ProjectService {
 
         // Emit deletion event to room
         emitProjectEvent(projectId, "project:deleted", { projectId });
+
+        // Dispatch in-app notifications and SendGrid emails
+        NotificationService.notifyProjectDeletedOrArchived(
+            projectId,
+            projectName,
+            actorId,
+            "DELETED"
+        ).catch(() => {});
 
         return { success: true };
     }
@@ -228,8 +255,16 @@ export class ProjectService {
         });
 
         // Directly notify the newly invited user's active socket sessions
-        // so the project appears in their workspace list without a page refresh.
         notifyUserOfInvite(projectId, inviteeId, updatedProject);
+
+        // Dispatch in-app notifications and SendGrid emails
+        NotificationService.notifyMemberInvited(
+            projectId,
+            project.name,
+            inviteeId,
+            role,
+            actorId
+        ).catch(() => {});
 
         return updatedProject;
     }
@@ -261,6 +296,8 @@ export class ProjectService {
             throw new ApiError(404, "User is not a member of this project workspace");
         }
 
+        const projectName = project.name;
+
         // Remove from members array
         project.members.splice(memberIndex, 1);
         const updatedProject = await project.save();
@@ -281,6 +318,14 @@ export class ProjectService {
 
         // Evict user's live sockets from the room
         evictUserFromProject(projectId, targetUserId);
+
+        // Dispatch in-app notifications and SendGrid emails
+        NotificationService.notifyMemberRemoved(
+            projectId,
+            projectName,
+            targetUserId,
+            actorId
+        ).catch(() => {});
 
         return updatedProject;
     }

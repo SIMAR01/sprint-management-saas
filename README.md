@@ -151,7 +151,21 @@ SWAGGER_SERVER_URL=http://localhost:5000
 API_TITLE=TeamFlow API
 API_VERSION=1.0.0
 API_DESCRIPTION=Production-grade Sprint & Project Management SaaS API Documentation
+
+# SendGrid & Notifications Configuration
+SENDGRID_API_KEY=SG.your_api_key_here
+SENDGRID_FROM_EMAIL=notifications@teamflow.internal
+SENDGRID_FROM_NAME=TeamFlow Sprint Manager
+ADMIN_EMAILS=admin@teamflow.internal
+APP_URL=http://localhost:3000
 ```
+
+---
+
+## Architectural Deep-Dives
+- [Authentication & Multi-Device Session Architecture](docs/authentication_architecture.md)
+- [Project & Workspace Management Architecture](docs/project_workspace.md)
+- [In-App Notifications & SendGrid Email Architecture](docs/notifications_and_emails.md)
 
 ---
 

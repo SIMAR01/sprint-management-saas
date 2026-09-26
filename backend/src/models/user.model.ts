@@ -13,6 +13,7 @@ export interface IUser extends Document {
   username: string;
   email: string;
   password: string;
+  role: "admin" | "user" | "manager";
   refreshTokens?: string[];
   createdAt: Date;
   updatedAt: Date;
@@ -51,6 +52,12 @@ const userSchema = new Schema<IUser>(
       type: String,
       required: [true, "Password is required"],
       select: false, // Ensures password is never returned in queries by default
+    },
+    role: {
+      type: String,
+      enum: ["admin", "user", "manager"],
+      default: "user",
+      index: true,
     },
     refreshTokens: {
       type: [String],

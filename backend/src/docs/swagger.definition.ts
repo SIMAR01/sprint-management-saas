@@ -3,6 +3,7 @@ import { commonSchemas } from "./schemas/common.schema";
 import { authSchemas } from "./schemas/auth.schema";
 import { projectSchemas } from "./schemas/project.schema";
 import { taskSchemas } from "./schemas/task.schema";
+import { notificationSchemas } from "./schemas/notification.schema";
 import { commonResponses } from "./responses/common.responses";
 import { securitySchemes } from "./security/security";
 import { apiPaths } from "./routes/index";
@@ -92,6 +93,10 @@ The platform enforces a dual-token security model with real-time multi-device se
       description: "Sprint task items, status workflows, Kanban filtering, bulk operations, and event history.",
     },
     {
+      name: "Notifications",
+      description: "In-app website inbox notifications, unread counts, seen/unseen state management, and SendGrid email notifications.",
+    },
+    {
       name: "Health",
       description: "Health checks and operational status monitoring.",
     },
@@ -103,6 +108,7 @@ The platform enforces a dual-token security model with real-time multi-device se
       ...authSchemas,
       ...projectSchemas,
       ...taskSchemas,
+      ...notificationSchemas,
     },
     responses: {
       ...commonResponses,

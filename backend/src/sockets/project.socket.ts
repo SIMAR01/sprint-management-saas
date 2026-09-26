@@ -85,10 +85,34 @@ export const notifyUserOfInvite = (projectId: string, userId: string, project: a
 };
 
 /**
+ * Emits a real-time event message to a specific user's private socket room.
+ *
+ * @param userId The unique user UUID identifier.
+ * @param event The event action key (e.g. 'notification:new').
+ * @param data Data payload attached to the notification.
+ */
+export const emitUserEvent = (userId: string, event: string, data: any): void => {
+    if (ioInstance) {
+        const room = `user:${userId}`;
+        console.log(`[Socket] Emitting user event '${event}' to room '${room}'`);
+        ioInstance.to(room).emit(event, data);
+    } else {
+        console.warn("[Socket] Failed to emit user event: ioInstance is not set");
+    }
+};
+
+/**
  * Connects the project room membership listeners during connection lifecycle hooks.
  */
 export const registerProjectSocketHandlers = (io: Server, socket: Socket): void => {
     const user = (socket as any).user;
+
+    // Automatically join user's private room for direct notifications
+    if (user && user.id) {
+        const userRoom = `user:${user.id}`;
+        socket.join(userRoom);
+        console.log(`[Socket] User ${user.username} (ID: ${user.id}) joined personal room: ${userRoom}`);
+    }
 
     socket.on("join_project", async ({ projectId }: { projectId: string }) => {
         if (!projectId) {
