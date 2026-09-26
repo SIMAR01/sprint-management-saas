@@ -73,6 +73,24 @@ export const taskSchemas = {
       status: {
         $ref: "#/components/schemas/TaskStatus",
       },
+      images: {
+        type: "array",
+        items: {
+          type: "string",
+          format: "uri",
+        },
+        description: "Array of Cloudinary image/proof URLs — mandatory for 'done' status",
+        example: [
+          "https://res.cloudinary.com/teamflow/image/upload/v1721131200/teamflow/projects/8ea38a6a/tasks/screenshot1.png",
+        ],
+      },
+      videoUrl: {
+        type: "string",
+        format: "uri",
+        nullable: true,
+        description: "Optional demonstration video URL (e.g. Cloudinary video, Loom, YouTube)",
+        example: "https://www.loom.com/share/abcdef1234567890",
+      },
       isDeleted: {
         type: "boolean",
         description: "Soft-delete flag",
@@ -119,6 +137,24 @@ export const taskSchemas = {
         $ref: "#/components/schemas/TaskStatus",
         default: "todo",
       },
+      images: {
+        type: "array",
+        items: {
+          type: "string",
+        },
+        description:
+          "Array of uploaded Cloudinary image/proof URLs. Strictly mandatory if status is 'done'. Optional for 'todo', 'inprogress', 'underreview'.",
+        example: [
+          "https://res.cloudinary.com/teamflow/image/upload/v1721131200/teamflow/projects/8ea38a6a/tasks/screenshot1.png",
+        ],
+      },
+      videoUrl: {
+        type: "string",
+        format: "uri",
+        nullable: true,
+        description: "Optional demonstration video URL (e.g. Cloudinary video, Loom, YouTube)",
+        example: "https://www.loom.com/share/abcdef1234567890",
+      },
     },
   },
 
@@ -149,6 +185,194 @@ export const taskSchemas = {
       },
       status: {
         $ref: "#/components/schemas/TaskStatus",
+        description: "Updated status. If setting to 'done', task must have at least one image/screenshot proof attached.",
+      },
+      images: {
+        type: "array",
+        items: {
+          type: "string",
+        },
+        description: "Updated array of image/document proof URLs. Required to be non-empty when status is 'done'.",
+        example: [
+          "https://res.cloudinary.com/teamflow/image/upload/v1721131200/teamflow/projects/8ea38a6a/tasks/proof1.png",
+        ],
+      },
+      videoUrl: {
+        type: "string",
+        format: "uri",
+        nullable: true,
+        description: "Updated demonstration video URL (pass null to clear)",
+        example: "https://www.loom.com/share/abcdef1234567890",
+      },
+    },
+  },
+
+  // File Upload Result
+  FileUploadResult: {
+    type: "object",
+    required: ["url", "secureUrl", "publicId", "format", "resourceType", "bytes"],
+    properties: {
+      url: {
+        type: "string",
+        example: "http://res.cloudinary.com/teamflow/image/upload/v1721131200/teamflow/projects/8ea38a6a/tasks/screenshot.png",
+      },
+      secureUrl: {
+        type: "string",
+        example: "https://res.cloudinary.com/teamflow/image/upload/v1721131200/teamflow/projects/8ea38a6a/tasks/screenshot.png",
+      },
+      publicId: {
+        type: "string",
+        example: "teamflow/projects/8ea38a6a/tasks/screenshot",
+      },
+      format: {
+        type: "string",
+        example: "png",
+      },
+      resourceType: {
+        type: "string",
+        example: "image",
+      },
+      bytes: {
+        type: "integer",
+        example: 245800,
+      },
+      originalFilename: {
+        type: "string",
+        example: "screenshot.png",
+      },
+    },
+  },
+
+  // File Upload Response (200) - supports single and multiple uploads
+  FileUploadResponse: {
+    type: "object",
+    required: ["statusCode", "success", "message", "data"],
+    properties: {
+      statusCode: {
+        type: "integer",
+        example: 200,
+      },
+      success: {
+        type: "boolean",
+        example: true,
+      },
+      message: {
+        type: "string",
+        example: "File(s) uploaded successfully to Cloudinary",
+      },
+      data: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            example: "https://res.cloudinary.com/teamflow/image/upload/v1721131200/teamflow/projects/8ea38a6a/tasks/screenshot.png",
+          },
+          secureUrl: {
+            type: "string",
+            example: "https://res.cloudinary.com/teamflow/image/upload/v1721131200/teamflow/projects/8ea38a6a/tasks/screenshot.png",
+          },
+          publicId: {
+            type: "string",
+            example: "teamflow/projects/8ea38a6a/tasks/screenshot",
+          },
+          format: {
+            type: "string",
+            example: "png",
+          },
+          resourceType: {
+            type: "string",
+            example: "image",
+          },
+          bytes: {
+            type: "integer",
+            example: 245800,
+          },
+          originalFilename: {
+            type: "string",
+            example: "screenshot.png",
+          },
+          files: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/FileUploadResult",
+            },
+            description: "List of uploaded file metadata objects",
+          },
+        },
+      },
+    },
+  },
+
+  // Delete Attachment Request
+  DeleteAttachmentRequest: {
+    type: "object",
+    required: ["publicId"],
+    properties: {
+      publicId: {
+        type: "string",
+        description: "Cloudinary asset public ID to delete",
+        example: "teamflow/projects/8ea38a6a/tasks/screenshot_abc123",
+      },
+      resourceType: {
+        type: "string",
+        enum: ["image", "raw", "video", "auto"],
+        default: "auto",
+        description: "Asset resource type (image, raw for PDF, video, or auto)",
+        example: "image",
+      },
+      taskId: {
+        type: "string",
+        format: "uuid",
+        description: "Optional task UUID to detach this attachment from in the database",
+        example: "e28dc124-7b9c-48be-9b16-e57ca32d96c4",
+      },
+      fileUrl: {
+        type: "string",
+        description: "Optional specific file URL to detach from the task document",
+        example: "https://res.cloudinary.com/teamflow/image/upload/v1721131200/teamflow/projects/8ea38a6a/tasks/screenshot.png",
+      },
+    },
+  },
+
+  // Delete Attachment Response (200)
+  DeleteAttachmentResponse: {
+    type: "object",
+    required: ["statusCode", "success", "message", "data"],
+    properties: {
+      statusCode: {
+        type: "integer",
+        example: 200,
+      },
+      success: {
+        type: "boolean",
+        example: true,
+      },
+      message: {
+        type: "string",
+        example: "Attachment deleted successfully from Cloudinary",
+      },
+      data: {
+        type: "object",
+        properties: {
+          publicId: {
+            type: "string",
+            example: "teamflow/projects/8ea38a6a/tasks/screenshot_abc123",
+          },
+          result: {
+            type: "string",
+            example: "ok",
+          },
+          taskId: {
+            type: "string",
+            format: "uuid",
+            nullable: true,
+            example: "e28dc124-7b9c-48be-9b16-e57ca32d96c4",
+          },
+          task: {
+            $ref: "#/components/schemas/Task",
+            nullable: true,
+          },
+        },
       },
     },
   },

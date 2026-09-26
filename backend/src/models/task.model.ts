@@ -24,6 +24,10 @@ export interface ITask extends Document {
     /** References User.uuid.id — nullable for unassigned tasks */
     assigneeId?: string;
     status: TaskStatus;
+    /** Array of Cloudinary image/proof URLs — mandatory for 'done' status */
+    images: string[];
+    /** Optional video demonstration URL (e.g. Cloudinary, Loom, YouTube) */
+    videoUrl?: string | null;
     /** Soft-delete flag — tasks are never physically removed from the collection */
     isDeleted: boolean;
     createdAt: Date;
@@ -64,6 +68,14 @@ const taskSchema = new Schema<ITask>(
             enum: TASK_STATUSES,
             default: "todo",
             required: true,
+        },
+        images: {
+            type: [String],
+            default: [],
+        },
+        videoUrl: {
+            type: String,
+            default: null,
         },
         isDeleted: {
             type: Boolean,

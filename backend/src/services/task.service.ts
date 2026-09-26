@@ -4,6 +4,7 @@ import { TaskEvent } from "../models/taskEvent.model";
 import { User } from "../models/user.model";
 import { emitProjectEvent } from "../sockets/project.socket";
 import { ApiError } from "../utils/ApiError";
+import { deleteFromCloudinary } from "../utils/cloudinary";
 
 /**
  * NOTE ON TRANSACTIONS:
@@ -85,7 +86,9 @@ export class TaskService {
         actorId: string,
         description?: string,
         assigneeId?: string,
-        status: TaskStatus = "todo"
+        status: TaskStatus = "todo",
+        images: string[] = [],
+        videoUrl?: string | null
     ): Promise<ITask> {
         // Pre-flight: verify project exists and is not archived
         const project = await Project.findOne({ projectId, isDeleted: { $ne: true } });
@@ -104,8 +107,24 @@ export class TaskService {
             }
         }
 
+        // Enforce mandatory screenshot/image proof for 'done' status
+        if (status === "done" && (!images || images.length === 0)) {
+            throw new ApiError(
+                400,
+                "Validation Error: At least one screenshot/image proof is mandatory when creating a task directly in 'done' status. Please attach completed work screenshots."
+            );
+        }
+
         // 1. Insert the task read model
-        const task = new Task({ projectId, title, description, assigneeId, status });
+        const task = new Task({
+            projectId,
+            title,
+            description,
+            assigneeId,
+            status,
+            images: images || [],
+            videoUrl: videoUrl || null,
+        });
         const savedTask = await task.save();
 
         // 2. Append immutable creation event — compensate on failure
@@ -120,6 +139,8 @@ export class TaskService {
                     description: savedTask.description ?? null,
                     assigneeId: savedTask.assigneeId ?? null,
                     status: savedTask.status,
+                    images: savedTask.images ?? [],
+                    videoUrl: savedTask.videoUrl ?? null,
                     projectId,
                 },
             });
@@ -181,7 +202,7 @@ export class TaskService {
     }
 
     /**
-     * Updates any details of a task (title, description, assigneeId, status).
+     * Updates any details of a task (title, description, assigneeId, status, images, videoUrl).
      * Writes corresponding events to the immutable event log and handles rollbacks on failure.
      *
      * Emits: `task:updated` (and `task:status_changed` if status changed) to the project room.
@@ -194,6 +215,8 @@ export class TaskService {
             description?: string | null;
             assigneeId?: string | null;
             status?: TaskStatus;
+            images?: string[];
+            videoUrl?: string | null;
         },
         actorId: string
     ): Promise<ITask> {
@@ -218,6 +241,17 @@ export class TaskService {
         const existingTask = await Task.findOne({ taskId, projectId, isDeleted: false });
         if (!existingTask) {
             throw new ApiError(404, "Task not found or has been deleted");
+        }
+
+        // Check target status and enforce mandatory screenshot/image proof for 'done' status
+        const targetStatus = updates.status !== undefined ? updates.status : existingTask.status;
+        const targetImages = updates.images !== undefined ? updates.images : (existingTask.images || []);
+
+        if (targetStatus === "done" && (!targetImages || targetImages.length === 0)) {
+            throw new ApiError(
+                400,
+                "Validation Error: At least one screenshot/image proof is mandatory when transitioning task to 'done' status. Please attach completed work screenshots."
+            );
         }
 
         const eventsToCreate: any[] = [];
@@ -271,7 +305,49 @@ export class TaskService {
                 projectId,
                 userId: actorId,
                 eventType: "STATUS_CHANGED",
-                payload: { previousStatus: existingTask.status, newStatus: updates.status, title: existingTask.title },
+                payload: {
+                    previousStatus: existingTask.status,
+                    newStatus: updates.status,
+                    title: existingTask.title,
+                    images: targetImages,
+                    videoUrl: updates.videoUrl !== undefined ? updates.videoUrl : existingTask.videoUrl,
+                },
+            });
+        }
+
+        // 5. Check images update
+        if (updates.images !== undefined) {
+            fieldsToUpdate.images = updates.images;
+            eventsToCreate.push({
+                taskId,
+                projectId,
+                userId: actorId,
+                eventType: "TASK_UPDATED",
+                payload: {
+                    field: "images",
+                    previousValue: existingTask.images || [],
+                    newValue: updates.images,
+                    title: existingTask.title,
+                },
+            });
+        }
+
+        // 6. Check videoUrl update
+        const previousVideo = existingTask.videoUrl || null;
+        const newVideo = updates.videoUrl === undefined ? undefined : (updates.videoUrl || null);
+        if (newVideo !== undefined && newVideo !== previousVideo) {
+            fieldsToUpdate.videoUrl = newVideo;
+            eventsToCreate.push({
+                taskId,
+                projectId,
+                userId: actorId,
+                eventType: "TASK_UPDATED",
+                payload: {
+                    field: "videoUrl",
+                    previousValue: previousVideo,
+                    newValue: newVideo,
+                    title: existingTask.title,
+                },
             });
         }
 
@@ -523,5 +599,105 @@ export class TaskService {
                 email: "",
             },
         }));
+    }
+
+    /**
+     * Deletes a file asset from Cloudinary and optionally removes its URL reference
+     * from a specific Task document in the project workspace.
+     */
+    public static async deleteAttachment(
+        projectId: string,
+        publicId: string,
+        resourceType: "image" | "raw" | "video" | "auto" = "auto",
+        taskId?: string,
+        fileUrl?: string,
+        actorId?: string
+    ): Promise<{
+        publicId: string;
+        result: string;
+        taskId?: string;
+        task?: ITask | null;
+    }> {
+        // Pre-flight: verify project exists and is not archived
+        const project = await Project.findOne({ projectId, isDeleted: { $ne: true } });
+        if (!project) {
+            throw new ApiError(404, "Project workspace not found or has been deleted");
+        }
+        if (project.isArchived) {
+            throw new ApiError(400, "Cannot delete attachments in an archived project workspace");
+        }
+
+        // 1. Delete asset from Cloudinary
+        const cloudResult = await deleteFromCloudinary(publicId, { resourceType });
+
+        let updatedTask: ITask | null = null;
+
+        // 2. If taskId is supplied, remove the attachment from the Task document
+        if (taskId) {
+            const existingTask = await Task.findOne({ taskId, projectId, isDeleted: false });
+            if (existingTask) {
+                const previousImages = existingTask.images || [];
+                const newImages = previousImages.filter((imgUrl) => {
+                    if (fileUrl && imgUrl === fileUrl) return false;
+                    if (publicId && imgUrl.includes(publicId)) return false;
+                    return true;
+                });
+
+                let newVideoUrl = existingTask.videoUrl;
+                if (fileUrl && existingTask.videoUrl === fileUrl) {
+                    newVideoUrl = null;
+                } else if (publicId && existingTask.videoUrl && existingTask.videoUrl.includes(publicId)) {
+                    newVideoUrl = null;
+                }
+
+                const hasImageChanges = newImages.length !== previousImages.length;
+                const hasVideoChanges = newVideoUrl !== existingTask.videoUrl;
+
+                if (hasImageChanges || hasVideoChanges) {
+                    const fieldsToUpdate: Record<string, any> = {};
+                    if (hasImageChanges) fieldsToUpdate.images = newImages;
+                    if (hasVideoChanges) fieldsToUpdate.videoUrl = newVideoUrl;
+
+                    const savedTask = await Task.findOneAndUpdate(
+                        { taskId, projectId, isDeleted: false },
+                        { $set: fieldsToUpdate },
+                        { new: true }
+                    );
+
+                    if (savedTask) {
+                        if (actorId) {
+                            await TaskEvent.create({
+                                taskId,
+                                projectId,
+                                userId: actorId,
+                                eventType: "TASK_UPDATED",
+                                payload: {
+                                    field: "attachments",
+                                    deletedPublicId: publicId,
+                                    deletedFileUrl: fileUrl,
+                                    remainingImages: newImages,
+                                    title: existingTask.title,
+                                },
+                            }).catch(() => {});
+                        }
+
+                        const enriched = await TaskService.enrichTasks([savedTask]);
+                        updatedTask = enriched[0];
+
+                        emitProjectEvent(projectId, "task:updated", updatedTask);
+                    }
+                } else {
+                    const enriched = await TaskService.enrichTasks([existingTask]);
+                    updatedTask = enriched[0];
+                }
+            }
+        }
+
+        return {
+            publicId: cloudResult.publicId,
+            result: cloudResult.result,
+            taskId,
+            task: updatedTask,
+        };
     }
 }

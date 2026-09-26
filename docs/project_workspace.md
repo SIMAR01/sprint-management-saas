@@ -408,35 +408,125 @@ If Redis is down or unreachable during the cache lookup, the engine logs the err
 
 ---
 
-## 6. Tasks & Task Event-Sourcing API Documentation
+## 6. Tasks, Media Attachments & Event-Sourcing API Documentation
 
-### A. Create Task (`POST /api/v1/projects/:projectId/tasks`)
-Creates a new task.
+### A. Upload Task Attachment (`POST /api/v1/projects/:projectId/tasks/upload`)
+Uploads one or multiple files (screenshots, image proofs, PDF specifications/documents, or demonstration videos) directly to **Cloudinary** using memory buffers and streaming.
+- **Headers**:
+  - `Authorization: Bearer <Access_Token>`
+  - `Content-Type: multipart/form-data`
+- **Form Data Field Names**:
+  - `file`: Single binary file (max 25MB).
+  - `files`: Multiple binary files (up to 10 files, max 25MB each).
+- **Supported MIME Types**:
+  - Images: `image/jpeg`, `image/jpg`, `image/png`, `image/webp`, `image/gif`, `image/svg+xml`, `image/bmp` (Cloudinary `image` resource type)
+  - Documents: `application/pdf` (Cloudinary `raw` resource type)
+  - Videos: `video/mp4`, `video/webm`, `video/quicktime`, `video/x-matroska`, `video/mpeg` (Cloudinary `video` resource type)
+- **Success Response (200)**:
+  ```json
+  {
+    "success": true,
+    "statusCode": 200,
+    "message": "2 file(s) uploaded successfully to Cloudinary",
+    "data": {
+      "files": [
+        {
+          "url": "https://res.cloudinary.com/.../screenshot1.png",
+          "secureUrl": "https://res.cloudinary.com/.../screenshot1.png",
+          "publicId": "teamflow/projects/8ea38a6a/tasks/uuid-screenshot1",
+          "format": "png",
+          "resourceType": "image",
+          "bytes": 245190,
+          "originalFilename": "screenshot1.png"
+        },
+        {
+          "url": "https://res.cloudinary.com/.../spec.pdf",
+          "secureUrl": "https://res.cloudinary.com/.../spec.pdf",
+          "publicId": "teamflow/projects/8ea38a6a/tasks/uuid-spec",
+          "format": "pdf",
+          "resourceType": "raw",
+          "bytes": 512300,
+          "originalFilename": "spec.pdf"
+        }
+      ]
+    }
+  }
+  ```
+
+### B. Delete Task Attachment / Cloudinary File (`DELETE /api/v1/projects/:projectId/tasks/attachments`)
+Deletes an uploaded media asset from **Cloudinary** by its `publicId`. If an optional `taskId` or `fileUrl` is supplied, it also removes the attachment URL reference from the corresponding task in MongoDB, appends a `TASK_UPDATED` event to the audit trail, and broadcasts a `task:updated` real-time event.
+- **Headers**:
+  - `Authorization: Bearer <Access_Token>`
+  - `Content-Type: application/json`
+- **Zod Validation Body**:
+  - `publicId`: String (required). Cloudinary asset public ID.
+  - `resourceType`: Enum (`image`, `raw`, `video`, `auto`). Default `auto`. Use `raw` for PDFs.
+  - `taskId`: String (UUID, optional). Task ID from which to remove the attachment.
+  - `fileUrl`: String (optional). Specific file URL to detach.
+- **Request Body Example**:
+  ```json
+  {
+    "publicId": "teamflow/projects/8ea38a6a/tasks/uuid-screenshot1",
+    "resourceType": "image",
+    "taskId": "e28dc124-7b9c-48be-9b16-e57ca32d96c4",
+    "fileUrl": "https://res.cloudinary.com/.../screenshot1.png"
+  }
+  ```
+- **Success Response (200)**:
+  ```json
+  {
+    "success": true,
+    "statusCode": 200,
+    "message": "Attachment deleted successfully from Cloudinary",
+    "data": {
+      "publicId": "teamflow/projects/8ea38a6a/tasks/uuid-screenshot1",
+      "result": "ok",
+      "taskId": "e28dc124-7b9c-48be-9b16-e57ca32d96c4",
+      "task": {
+        "taskId": "e28dc124-7b9c-48be-9b16-e57ca32d96c4",
+        "images": [],
+        "videoUrl": null
+      }
+    }
+  }
+  ```
+
+### C. Create Task (`POST /api/v1/projects/:projectId/tasks`)
+Creates a new task within the workspace. Media attachments (images, PDFs) and video walkthrough URLs are completely optional at creation time (unless creating directly in `'done'` status).
 - **Zod Validation Body**:
   - `title`: String (1-200 chars). Required.
-  - `description`: String (max 2000 chars). Optional.
-  - `assigneeId`: String (UUID). Optional.
-  - `status`: Enum (`todo`, `inprogress`, `underreview`, `done`). Optional.
+  - `description`: String (max 2000 chars). Optional/Nullable.
+  - `assigneeId`: String (UUID). Optional/Nullable.
+  - `status`: Enum (`todo`, `inprogress`, `underreview`, `done`). Default `todo`.
+  - `images`: Array of valid URL strings (images or PDFs). Optional for `todo`, `inprogress`, `underreview`. **Mandatory (min 1 URL)** if `status` is `'done'`.
+  - `videoUrl`: String (valid URL) or `null`. Optional across all states for video walkthroughs (e.g., Loom, Cloudinary, YouTube).
+- **Validation Rule (Done State Proof)**:
+  - If `status === "done"`, `images` must contain at least 1 proof URL. If empty, the API responds with `400 Bad Request`.
 
-### B. Update Task (`PATCH /api/v1/projects/:projectId/tasks/:taskId`)
-Updates details of a task (title, description, assignee, status).
+### D. Update Task (`PATCH /api/v1/projects/:projectId/tasks/:taskId`)
+Updates details of a task (title, description, assignee, status, media attachments, video URL). Users can add or update images, PDFs, or video URLs at any point when updating the task or transitioning status.
 - **Zod Validation Body**:
   - `title`: String (1-200 chars). Optional.
   - `description`: String (max 2000 chars). Optional/Nullable.
   - `assigneeId`: String (UUID). Optional/Nullable.
   - `status`: Enum (`todo`, `inprogress`, `underreview`, `done`). Optional.
-- **Success Response (200)**: Returns the updated task object enriched with assignee profile details (name, username, email).
-- **Real-Time Sockets**: Emits a `task:updated` event to the project socket room, containing the full enriched task. If status changes, also emits a `task:status_changed` event.
+  - `images`: Array of valid URL strings (images or PDFs). Optional for `todo`, `inprogress`, `underreview`. **Mandatory (min 1 URL)** if `status` is set to `'done'`.
+  - `videoUrl`: String (valid URL) or `null`. Optional.
+- **Business Logic & Error Handling**:
+  - When transitioning a task to `'done'`, the service enforces that either the incoming `images` payload contains $\ge 1$ URL or the existing task document already has $\ge 1$ image/proof URL.
+  - If a task is in `'done'` state and an update provides an empty `images: []` array without existing images, the request is rejected with `400 Bad Request`.
+- **Success Response (200)**: Returns the updated task object enriched with assignee profile details (name, username, email), `images`, and `videoUrl`.
+- **Real-Time Sockets**: Emits a `task:updated` event to the project socket room containing the full enriched task. If status changes, also emits a `task:status_changed` event.
 
-### C. Fetch Task Timeline (`GET /api/v1/projects/:projectId/tasks/:taskId/events`)
+### E. Fetch Task Timeline (`GET /api/v1/projects/:projectId/tasks/:taskId/events`)
 Returns the chronological activity events logged for the specific task.
 - **Event Types Logged**:
-  - `TASK_CREATED`
-  - `TASK_UPDATED` (logs `field`, `previousValue`, `newValue`)
+  - `TASK_CREATED` (includes initial `images` and `videoUrl`)
+  - `TASK_UPDATED` (logs `field`, `previousValue`, `newValue` for title, description, images, videoUrl, attachments)
   - `ASSIGNEE_CHANGED` (logs `previousAssigneeId`, `newAssigneeId`)
-  - `STATUS_CHANGED` (logs `previousStatus`, `newStatus`)
+  - `STATUS_CHANGED` (logs `previousStatus`, `newStatus`, and any accompanying proof images)
 
-### D. Bulk Delete Tasks (`DELETE /api/v1/projects/:projectId/tasks/bulk`)
+### F. Bulk Delete Tasks (`DELETE /api/v1/projects/:projectId/tasks/bulk`)
 Soft-deletes multiple tasks at once.
 - **Zod Validation Body**:
   - `taskIds`: Array of valid UUID strings. Min length 1.

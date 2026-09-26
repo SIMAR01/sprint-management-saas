@@ -26,6 +26,10 @@ export interface EnvironmentConfig {
   API_TITLE: string;
   API_VERSION: string;
   API_DESCRIPTION: string;
+  CLOUDINARY_CLOUD_NAME: string;
+  CLOUDINARY_API_KEY: string;
+  CLOUDINARY_API_SECRET: string;
+  CLOUDINARY_FOLDER: string;
   isProduction: boolean;
   isDevelopment: boolean;
   isTest: boolean;
@@ -87,6 +91,10 @@ export const env: EnvironmentConfig = {
   API_TITLE: process.env.API_TITLE || "TeamFlow API",
   API_VERSION: process.env.API_VERSION || "1.0.0",
   API_DESCRIPTION: process.env.API_DESCRIPTION || "Production-grade Sprint & Project Management SaaS API Documentation",
+  CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME || "",
+  CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY || "",
+  CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET || "",
+  CLOUDINARY_FOLDER: process.env.CLOUDINARY_FOLDER || "teamflow/tasks",
   isProduction: isProd,
   isDevelopment: isDev,
   isTest: isTest,

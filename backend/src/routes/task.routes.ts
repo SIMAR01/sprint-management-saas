@@ -1,12 +1,14 @@
 import { Router } from "express";
 import { validate } from "../middleware/validate.middleware";
 import { idempotencyMiddleware } from "../middleware/idempotency.middleware";
+import { uploadTaskAttachments } from "../middleware/upload.middleware";
 import { TaskController } from "../controllers/task.controller";
 import {
     createTaskSchema,
     updateTaskSchema,
     getTasksQuerySchema,
     bulkDeleteTasksSchema,
+    deleteAttachmentSchema,
 } from "../validations/task.validation";
 
 /**
@@ -20,10 +22,26 @@ import {
  * ProjectManager-only restriction is not applied at the task level.
  *
  * ⚠️  Route ordering is intentional:
- *   - Static segments (/events) must be declared BEFORE param segments (/:taskId)
- *     to prevent Express from matching the literal string "events" as a taskId.
+ *   - Static segments (/events, /upload, /attachments) must be declared BEFORE param segments (/:taskId)
+ *     to prevent Express from matching literal strings as a taskId.
  */
 const router = Router({ mergeParams: true });
+
+// ─── POST /projects/:projectId/tasks/upload ──────────────────────────────────
+// Upload screenshot proofs, PDFs, or demo videos (single or multiple) to Cloudinary
+router.post(
+    "/upload",
+    uploadTaskAttachments,
+    TaskController.uploadAttachment
+);
+
+// ─── DELETE /projects/:projectId/tasks/attachments ───────────────────────────
+// Delete attachment file from Cloudinary and optionally detach from Task document
+router.delete(
+    "/attachments",
+    validate(deleteAttachmentSchema),
+    TaskController.deleteAttachment
+);
 
 // ─── GET /projects/:projectId/tasks ──────────────────────────────────────────
 // Paginated task listing with optional status filter
@@ -39,9 +57,10 @@ router.get(
 router.get("/events", TaskController.getProjectTaskEvents);
 
 // ─── POST /projects/:projectId/tasks ─────────────────────────────────────────
-// Create a new task inside this project workspace
+// Create a new task inside this project workspace (supports JSON or multipart/form-data with direct file attachments)
 router.post(
     "/",
+    uploadTaskAttachments,
     idempotencyMiddleware,
     validate(createTaskSchema),
     TaskController.createTask
@@ -52,9 +71,10 @@ router.post(
 router.get("/:taskId/events", TaskController.getTaskEvents);
 
 // ─── PATCH /projects/:projectId/tasks/:taskId ────────────────────────────────
-// General task updates — title, description, assignee, status
+// General task updates — title, description, assignee, status (supports direct file attachments via multipart/form-data)
 router.patch(
     "/:taskId",
+    uploadTaskAttachments,
     idempotencyMiddleware,
     validate(updateTaskSchema),
     TaskController.updateTask
