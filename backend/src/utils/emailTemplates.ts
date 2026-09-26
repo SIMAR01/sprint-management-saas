@@ -572,3 +572,53 @@ export const getDeletionEmail = (data: {
 
   return { subject, html, text };
 };
+
+/**
+ * 7. Welcome Email Template for newly registered users
+ */
+export const getWelcomeEmail = (data: {
+  userName: string;
+  userEmail: string;
+}): EmailTemplatePayload => {
+  const ctaUrl = `${env.APP_URL}/login`;
+  const subject = `Welcome to TeamFlow, ${data.userName}! 🚀`;
+
+  const contentHtml = `
+    <p style="color:#cbd5e1; font-size:15px; line-height:1.6; margin-top:0;">
+      Welcome to <strong>TeamFlow</strong>, the production-grade Sprint & Project Management platform built for high-performing agile engineering teams.
+    </p>
+    <div class="details-box">
+      <div class="details-row">
+        <span class="details-label">Full Name:</span>
+        <span class="details-value">${data.userName}</span>
+      </div>
+      <div class="details-row">
+        <span class="details-label">Account Email:</span>
+        <span class="details-value">${data.userEmail}</span>
+      </div>
+      <div class="details-row">
+        <span class="details-label">Platform URL:</span>
+        <span class="details-value">${env.APP_URL}</span>
+      </div>
+    </div>
+    <p style="color:#94a3b8; font-size:14px; line-height:1.6;">
+      Get started right away by creating your first sprint project workspace or joining your team's existing board.
+    </p>
+  `;
+
+  const html = renderBaseLayout({
+    headline: `Welcome to TeamFlow, ${data.userName}!`,
+    badgeText: "Account Created",
+    badgeColor: "#4ade80",
+    badgeBg: "rgba(74, 222, 128, 0.15)",
+    contentHtml,
+    ctaText: "Log In to Workspace",
+    ctaUrl,
+    previewText: `Welcome to TeamFlow! Your account ${data.userEmail} is ready.`,
+  });
+
+  const text = `Welcome to TeamFlow, ${data.userName}!\n\nYour account (${data.userEmail}) has been created.\nLog in now: ${ctaUrl}`;
+
+  return { subject, html, text };
+};
+

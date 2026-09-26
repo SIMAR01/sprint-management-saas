@@ -10,14 +10,19 @@ import {
 } from "../utils/jwt";
 import { redisClient } from "../config/redis";
 import { parseUserAgent } from "../utils/userAgent";
+import { addAuditJob } from "../queues/audit.queue";
+import { addEmailJob } from "../queues/email.queue";
+import { getWelcomeEmail } from "../utils/emailTemplates";
 
 export class AuthService {
   /**
    * Registers a new user.
    */
-  public static async registerUser(userData: Partial<IUser>): Promise<Omit<IUser, "password" | "refreshTokens">> {
+  public static async registerUser(
+    userData: Partial<IUser>,
+    context?: { ip?: string; userAgent?: string; correlationId?: string }
+  ): Promise<Omit<IUser, "password" | "refreshTokens">> {
     const { name, username, email, password } = userData;
-    console.log(userData, ' ---userData')
     if (!name || !username || !email || !password) {
       throw new ApiError(400, "All fields are required");
     }
@@ -42,6 +47,47 @@ export class AuthService {
 
     await user.save();
 
+    // 1. Asynchronously enqueue Welcome Email via BullMQ
+    try {
+      const welcomeTemplate = getWelcomeEmail({
+        userName: user.name,
+        userEmail: user.email,
+      });
+      await addEmailJob({
+        to: user.email,
+        subject: welcomeTemplate.subject,
+        html: welcomeTemplate.html,
+        text: welcomeTemplate.text,
+        correlationId: context?.correlationId,
+      });
+    } catch (err: any) {
+      console.warn("[AuthService] Non-blocking: Failed to enqueue welcome email:", err.message);
+    }
+
+    // 2. Asynchronously enqueue Audit Log
+    await addAuditJob({
+      action: "USER_REGISTERED",
+      actor: {
+        userId: user.uuid.id,
+        email: user.email,
+        role: "User",
+      },
+      resource: {
+        type: "USER",
+        id: user.uuid.id,
+        name: user.name,
+      },
+      context: {
+        ip: context?.ip || "unknown",
+        userAgent: context?.userAgent || "unknown",
+        correlationId: context?.correlationId,
+      },
+      metadata: {
+        username: user.username,
+        email: user.email,
+      },
+    });
+
     const userJson = user.toObject();
     delete (userJson as any).password;
     delete (userJson as any).refreshTokens;
@@ -55,8 +101,9 @@ export class AuthService {
   public static async loginUser(
     emailOrUsername: string,
     password: string,
-    ip: string = "unknown",
-    userAgent: string = "unknown"
+    ip = "unknown",
+    userAgent = "unknown",
+    correlationId?: string
   ): Promise<{
     user: { id: string; name: string; username: string; email: string };
     accessToken: string;
@@ -106,9 +153,7 @@ export class AuthService {
       currentAccessToken: accessToken,
     };
 
-    await redisClient.set(sessionKey, JSON.stringify(sessionData), {
-      EX: 7 * 24 * 60 * 60, // 7 days in seconds
-    });
+    await redisClient.set(sessionKey, JSON.stringify(sessionData), "EX", 7 * 24 * 60 * 60);
 
     // Also persist hashed refresh token in MongoDB as fallback
     const hashed = await hashPassword(plainRefreshToken);
@@ -123,6 +168,30 @@ export class AuthService {
     }
 
     await user.save();
+
+    // Enqueue audit log asynchronously
+    await addAuditJob({
+      action: "USER_LOGGED_IN",
+      actor: {
+        userId,
+        email: user.email,
+        role: "User",
+      },
+      resource: {
+        type: "SESSION",
+        id: sessionId,
+      },
+      context: {
+        ip,
+        userAgent,
+        correlationId,
+      },
+      metadata: {
+        browser: parsedUA.browser,
+        os: parsedUA.os,
+        device: parsedUA.device,
+      },
+    });
 
     return {
       user: {
@@ -144,7 +213,8 @@ export class AuthService {
     plainRefreshToken: string,
     ip?: string,
     userAgent?: string,
-    oldAccessToken?: string
+    oldAccessToken?: string,
+    correlationId?: string
   ): Promise<{
     accessToken: string;
     newPlainRefreshToken: string;
@@ -211,26 +281,24 @@ export class AuthService {
       const pattern = `session:${userId}:*`;
       let cursor = "0";
       do {
-        const reply = await redisClient.scan(cursor, { MATCH: pattern, COUNT: 100 });
-        cursor = reply.cursor;
-        const keys = reply.keys;
+        const [nextCursor, keys] = await redisClient.scan(cursor, "MATCH", pattern, "COUNT", 100);
+        cursor = nextCursor;
         if (keys.length > 0) {
-          await redisClient.del(keys);
+          await redisClient.del(...keys);
         }
       } while (cursor !== "0");
 
       throw new ApiError(401, "Invalid or expired session / potential reuse detected");
     }
 
-    // 4. Invalidate the previous Access Token in Redis
-    // A) If oldAccessToken was explicitly passed from client header/body
+    // 4. Invalidate previous Access Token in Redis
     if (oldAccessToken) {
       try {
         const decodedOld = jwt.decode(oldAccessToken) as { exp?: number };
         if (decodedOld?.exp) {
           const rem = decodedOld.exp - Math.floor(Date.now() / 1000);
           if (rem > 0) {
-            await redisClient.set(`blacklist:${oldAccessToken}`, "revoked", { EX: rem });
+            await redisClient.set(`blacklist:${oldAccessToken}`, "revoked", "EX", rem);
           }
         }
       } catch (err) {
@@ -238,14 +306,14 @@ export class AuthService {
       }
     }
 
-    // B) Blacklist the currentAccessToken stored in the existing Redis session data
+    // Blacklist currentAccessToken stored in existing Redis session data
     if (sessionData && sessionData.currentAccessToken) {
       try {
         const decodedPrev = jwt.decode(sessionData.currentAccessToken) as { exp?: number };
         if (decodedPrev?.exp) {
           const rem = decodedPrev.exp - Math.floor(Date.now() / 1000);
           if (rem > 0) {
-            await redisClient.set(`blacklist:${sessionData.currentAccessToken}`, "revoked", { EX: rem });
+            await redisClient.set(`blacklist:${sessionData.currentAccessToken}`, "revoked", "EX", rem);
           }
         }
       } catch (err) {
@@ -260,9 +328,7 @@ export class AuthService {
         ? decodedRefresh.exp - Math.floor(Date.now() / 1000)
         : 7 * 24 * 60 * 60;
       if (refreshRemaining > 0) {
-        await redisClient.set(`blacklist:refresh:${plainRefreshToken}`, "rotated", {
-          EX: refreshRemaining,
-        });
+        await redisClient.set(`blacklist:refresh:${plainRefreshToken}`, "rotated", "EX", refreshRemaining);
       }
     } catch (err) {
       console.error("Failed to blacklist rotated refresh token:", err);
@@ -277,7 +343,7 @@ export class AuthService {
     });
     const newPlainRefreshToken = generateRefreshToken({ id: userId, sessionId });
 
-    // 7. Update/Save session in Redis with the new accessToken and refreshToken
+    // 7. Update/Save session in Redis with new accessToken and refreshToken
     const parsedUA = parseUserAgent(userAgent || (sessionData?.userAgent));
     const updatedSessionData = {
       sessionId,
@@ -293,9 +359,7 @@ export class AuthService {
       currentAccessToken: accessToken,
     };
 
-    await redisClient.set(sessionKey, JSON.stringify(updatedSessionData), {
-      EX: 7 * 24 * 60 * 60, // 7 days
-    });
+    await redisClient.set(sessionKey, JSON.stringify(updatedSessionData), "EX", 7 * 24 * 60 * 60);
 
     // 8. Update fallback DB token
     const newHashedToken = await hashPassword(newPlainRefreshToken);
@@ -303,7 +367,6 @@ export class AuthService {
       user.refreshTokens = [];
     }
 
-    // Replace old hashed token
     if (oldHashedTokenMatched) {
       const idx = user.refreshTokens.indexOf(oldHashedTokenMatched);
       if (idx !== -1) {
@@ -325,7 +388,6 @@ export class AuthService {
       }
     }
 
-    // Keep active sessions limited to 10
     if (user.refreshTokens.length > 10) {
       user.refreshTokens.shift();
     }
@@ -340,7 +402,6 @@ export class AuthService {
 
   /**
    * Log out user, removing session key(s) from Redis and blacklisting both Access Token and Refresh Token.
-   * Returns details of all sessions that were logged out.
    */
   public static async logoutUser(options: {
     userId: string;
@@ -348,6 +409,7 @@ export class AuthService {
     plainRefreshToken?: string;
     sessionIdToLogout?: string | null;
     logoutAll?: boolean;
+    correlationId?: string;
   }): Promise<{
     loggedOutSessions: Array<{
       sessionId: string;
@@ -357,21 +419,19 @@ export class AuthService {
       device: string;
     }>;
   }> {
-    const { userId, accessToken, plainRefreshToken, sessionIdToLogout, logoutAll } = options;
+    const { userId, accessToken, plainRefreshToken, sessionIdToLogout, logoutAll, correlationId } = options;
 
     const user = await User.findOne({ "uuid.id": userId }).select("+refreshTokens");
     const loggedOutSessions: any[] = [];
 
-    // 1. Blacklist the current Access Token in Redis
+    // 1. Blacklist current Access Token in Redis
     if (accessToken) {
       try {
         const decoded = jwt.decode(accessToken) as { exp?: number };
         if (decoded && decoded.exp) {
           const remainingSeconds = decoded.exp - Math.floor(Date.now() / 1000);
           if (remainingSeconds > 0) {
-            await redisClient.set(`blacklist:${accessToken}`, "logged_out", {
-              EX: remainingSeconds,
-            });
+            await redisClient.set(`blacklist:${accessToken}`, "logged_out", "EX", remainingSeconds);
           }
         }
       } catch (error) {
@@ -379,7 +439,7 @@ export class AuthService {
       }
     }
 
-    // 2. Blacklist the provided Refresh Token in Redis
+    // 2. Blacklist provided Refresh Token in Redis
     if (plainRefreshToken) {
       try {
         const decoded = jwt.decode(plainRefreshToken) as { exp?: number };
@@ -387,9 +447,7 @@ export class AuthService {
           ? decoded.exp - Math.floor(Date.now() / 1000)
           : 7 * 24 * 60 * 60;
         if (remainingSeconds > 0) {
-          await redisClient.set(`blacklist:refresh:${plainRefreshToken}`, "logged_out", {
-            EX: remainingSeconds,
-          });
+          await redisClient.set(`blacklist:refresh:${plainRefreshToken}`, "logged_out", "EX", remainingSeconds);
         }
       } catch (error) {
         console.error("Failed to store refresh token in Redis blacklist:", error);
@@ -398,32 +456,30 @@ export class AuthService {
 
     // 3. Handle Session Revocation
     if (logoutAll) {
-      // Set global revocation timestamp in Redis (covers any tokens across all devices for 15 mins)
       try {
         await redisClient.set(
           `user:revoked_before:${userId}`,
           Math.floor(Date.now() / 1000).toString(),
-          { EX: 15 * 60 }
+          "EX",
+          15 * 60
         );
       } catch (err) {
         console.error("Failed to set global revocation timestamp:", err);
       }
 
-      // Scan and delete all Redis sessions
       const pattern = `session:${userId}:*`;
       let cursor = "0";
       const keysToDelete: string[] = [];
       do {
-        const reply = await redisClient.scan(cursor, { MATCH: pattern, COUNT: 100 });
-        cursor = reply.cursor;
-        const keys = reply.keys;
+        const [nextCursor, keys] = await redisClient.scan(cursor, "MATCH", pattern, "COUNT", 100);
+        cursor = nextCursor;
         if (keys.length > 0) {
           keysToDelete.push(...keys);
         }
       } while (cursor !== "0");
 
       if (keysToDelete.length > 0) {
-        const values = await redisClient.mGet(keysToDelete);
+        const values = await redisClient.mget(...keysToDelete);
         for (const val of values) {
           if (val) {
             try {
@@ -431,16 +487,15 @@ export class AuthService {
               const { refreshToken: rToken, currentAccessToken: cAccess, ...publicSession } = session;
               loggedOutSessions.push(publicSession);
 
-              // Blacklist tokens stored in those sessions
               if (rToken) {
-                await redisClient.set(`blacklist:refresh:${rToken}`, "logged_out", { EX: 7 * 24 * 60 * 60 });
+                await redisClient.set(`blacklist:refresh:${rToken}`, "logged_out", "EX", 7 * 24 * 60 * 60);
               }
               if (cAccess) {
                 const dec = jwt.decode(cAccess) as { exp?: number };
                 if (dec?.exp) {
                   const rem = dec.exp - Math.floor(Date.now() / 1000);
                   if (rem > 0) {
-                    await redisClient.set(`blacklist:${cAccess}`, "logged_out", { EX: rem });
+                    await redisClient.set(`blacklist:${cAccess}`, "logged_out", "EX", rem);
                   }
                 }
               }
@@ -449,16 +504,14 @@ export class AuthService {
             }
           }
         }
-        await redisClient.del(keysToDelete);
+        await redisClient.del(...keysToDelete);
       }
 
-      // Clear all refresh tokens in MongoDB
       if (user) {
         user.refreshTokens = [];
         await user.save();
       }
     } else if (sessionIdToLogout !== undefined && sessionIdToLogout !== null) {
-      // Logout a specific session by ID
       const sessionKey = `session:${userId}:${sessionIdToLogout}`;
       const sessionDataStr = await redisClient.get(sessionKey);
 
@@ -474,14 +527,14 @@ export class AuthService {
         loggedOutSessions.push(publicSession);
 
         if (tokenToRevoke) {
-          await redisClient.set(`blacklist:refresh:${tokenToRevoke}`, "logged_out", { EX: 7 * 24 * 60 * 60 });
+          await redisClient.set(`blacklist:refresh:${tokenToRevoke}`, "logged_out", "EX", 7 * 24 * 60 * 60);
         }
         if (cAccess) {
           const dec = jwt.decode(cAccess) as { exp?: number };
           if (dec?.exp) {
             const rem = dec.exp - Math.floor(Date.now() / 1000);
             if (rem > 0) {
-              await redisClient.set(`blacklist:${cAccess}`, "logged_out", { EX: rem });
+              await redisClient.set(`blacklist:${cAccess}`, "logged_out", "EX", rem);
             }
           }
         }
@@ -500,16 +553,13 @@ export class AuthService {
         console.error("Error parsing session data during specific logout:", err);
       }
     } else {
-      // Logout single current session: identify sessionId from plainRefreshToken or accessToken
       let targetSessionId: string | undefined;
 
       if (plainRefreshToken) {
         try {
           const decoded = verifyRefreshToken(plainRefreshToken);
           targetSessionId = decoded.sessionId;
-        } catch (err) {
-          // Token might be expired or invalid
-        }
+        } catch (err) {}
       }
 
       if (!targetSessionId && accessToken) {
@@ -531,7 +581,7 @@ export class AuthService {
             loggedOutSessions.push(publicSession);
 
             if (tokenToRevoke) {
-              await redisClient.set(`blacklist:refresh:${tokenToRevoke}`, "logged_out", { EX: 7 * 24 * 60 * 60 });
+              await redisClient.set(`blacklist:refresh:${tokenToRevoke}`, "logged_out", "EX", 7 * 24 * 60 * 60);
               if (user && user.refreshTokens) {
                 const filteredTokens: string[] = [];
                 for (const hashedToken of user.refreshTokens) {
@@ -549,7 +599,7 @@ export class AuthService {
               if (dec?.exp) {
                 const rem = dec.exp - Math.floor(Date.now() / 1000);
                 if (rem > 0) {
-                  await redisClient.set(`blacklist:${cAccess}`, "logged_out", { EX: rem });
+                  await redisClient.set(`blacklist:${cAccess}`, "logged_out", "EX", rem);
                 }
               }
             }
@@ -558,7 +608,6 @@ export class AuthService {
           }
         }
       } else if (plainRefreshToken && user && user.refreshTokens) {
-        // Fallback: Remove from MongoDB if sessionId couldn't be resolved
         const filteredTokens: string[] = [];
         for (const hashedToken of user.refreshTokens) {
           if (!(await comparePassword(plainRefreshToken, hashedToken))) {
@@ -569,6 +618,27 @@ export class AuthService {
         await user.save();
       }
     }
+
+    // Enqueue audit log asynchronously
+    await addAuditJob({
+      action: logoutAll ? "USER_LOGGED_OUT_ALL" : "USER_LOGGED_OUT",
+      actor: {
+        userId,
+        email: user?.email || "unknown@teamflow.app",
+        role: "User",
+      },
+      resource: {
+        type: "SESSION",
+        id: sessionIdToLogout || "current",
+      },
+      context: {
+        correlationId,
+      },
+      metadata: {
+        logoutAll: !!logoutAll,
+        sessionsRevokedCount: loggedOutSessions.length,
+      },
+    });
 
     return {
       loggedOutSessions,
@@ -595,12 +665,11 @@ export class AuthService {
     let cursor = "0";
 
     do {
-      const reply = await redisClient.scan(cursor, { MATCH: pattern, COUNT: 100 });
-      cursor = reply.cursor;
-      const keys = reply.keys;
+      const [nextCursor, keys] = await redisClient.scan(cursor, "MATCH", pattern, "COUNT", 100);
+      cursor = nextCursor;
 
       if (keys.length > 0) {
-        const values = await redisClient.mGet(keys);
+        const values = await redisClient.mget(...keys);
         for (let i = 0; i < keys.length; i++) {
           const value = values[i];
           if (value) {

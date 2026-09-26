@@ -2,6 +2,7 @@ import { Router } from "express";
 import { ProjectController } from "../controllers/project.controller";
 import { validate } from "../middleware/validate.middleware";
 import taskRouter from "./task.routes";
+import auditRouter from "./audit.routes";
 import {
     createProjectSchema,
     updateProjectSchema,
@@ -18,11 +19,12 @@ router.get("/", ProjectController.list);
 router.get("/created", ProjectController.listCreated);
 router.post("/", idempotencyMiddleware, validate(createProjectSchema), ProjectController.create);
 
-// ─── Task Subrouter ───────────────────────────────────────────────────────────
-// Mount task routes under /:projectId/tasks.
-// checkMembership runs first — validates project existence + user membership,
-// then passes control to the task subrouter for all task-level operations.
+// ─── Subrouters ───────────────────────────────────────────────────────────────
+// Mount task routes under /:projectId/tasks
 router.use("/:projectId/tasks", checkMembership, taskRouter);
+
+// Mount project audit routes under /:projectId/audit
+router.use("/:projectId/audit", checkMembership, auditRouter);
 
 // Project specific reads (accessible to any workspace member)
 router.get("/:projectId", checkMembership, ProjectController.getDetails);

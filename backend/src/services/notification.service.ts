@@ -11,6 +11,8 @@ import {
   getTaskUpdatedEmail,
   getDeletionEmail,
 } from "../utils/emailTemplates";
+import { addNotificationJob } from "../queues/notification.queue";
+import { addEmailJob } from "../queues/email.queue";
 import { emitUserEvent } from "../sockets/project.socket";
 import { ApiError } from "../utils/ApiError";
 
@@ -162,44 +164,40 @@ export class NotificationService {
     const recipientList = Array.from(uniqueRecipients.values());
     if (recipientList.length === 0) return [];
 
-    // 1. Create In-App Notification records in MongoDB
-    const docsToInsert = recipientList.map((r) => ({
-      userId: r.userId,
-      projectId: projectId || null,
-      taskId: taskId || null,
-      title,
-      message,
-      type,
-      data: {
-        ...data,
-        recipientName: r.name,
-        recipientEmail: r.email,
-      },
-      isRead: false,
-    }));
-
-    const savedNotifications = await Notification.insertMany(docsToInsert);
-
-    // 2. Real-Time Socket Broadcast to each user's private channel
-    for (const notif of savedNotifications) {
-      emitUserEvent(notif.userId, "notification:new", notif);
-    }
-
-    // 3. Dispatch SendGrid Email with professional HTML template
-    if (emailPayload) {
-      const emailAddresses = recipientList.map((r) => r.email);
-      // Asynchronously send emails (fail-safe without blocking main response)
-      sendEmail({
-        to: emailAddresses,
-        subject: emailPayload.subject,
-        html: emailPayload.html,
-        text: emailPayload.text,
+    // 1. Asynchronously enqueue In-App Notifications and live Socket broadcasts via BullMQ
+    for (const r of recipientList) {
+      addNotificationJob({
+        userId: r.userId,
+        type,
+        title,
+        message,
+        projectId: projectId || undefined,
+        taskId: taskId || undefined,
+        metadata: {
+          ...data,
+          recipientName: r.name,
+          recipientEmail: r.email,
+        },
       }).catch((err) => {
-        console.error("[NotificationService] SendGrid email dispatch error:", err);
+        console.error("[NotificationService] Failed to enqueue notification job:", err);
       });
     }
 
-    return savedNotifications;
+    // 2. Asynchronously enqueue SendGrid Emails via BullMQ
+    if (emailPayload) {
+      for (const r of recipientList) {
+        addEmailJob({
+          to: r.email,
+          subject: emailPayload.subject,
+          html: emailPayload.html,
+          text: emailPayload.text,
+        }).catch((err) => {
+          console.error("[NotificationService] Failed to enqueue email job:", err);
+        });
+      }
+    }
+
+    return [];
   }
 
   // ─── Domain Event Triggers ─────────────────────────────────────────────────

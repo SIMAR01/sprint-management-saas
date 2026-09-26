@@ -95,7 +95,7 @@ export const idempotencyMiddleware = async (
 
             // Asynchronously store envelope in Redis with a 5-minute (300s) TTL
             redisClient
-                .set(redisKey, JSON.stringify(responseEnvelope), { EX: 300 })
+                .set(redisKey, JSON.stringify(responseEnvelope), "EX", 300)
                 .then(() => {
                     console.log(`[Idempotency] Cached response footprint for key: ${redisKey}`);
                 })

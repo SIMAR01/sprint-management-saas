@@ -23,13 +23,14 @@ A production-grade, multi-tenant Sprint & Project Management SaaS backend built 
 
 ---
 
-## Tech Stack
 - **Runtime & Language**: Node.js, TypeScript (ES2022, NodeNext resolution)
 - **Web Framework**: Express 5
-- **Databases**: MongoDB (Mongoose), Redis (Redis v6 client)
+- **Databases**: MongoDB (Mongoose), Redis (Production AOF persistence, `ioredis`)
+- **Queue & Background Workers**: BullMQ (Audit Logs, Notification Engine, SendGrid Emails)
+- **Audit Logging**: Immutable event ledger with diff tracking and correlation ID tracing
 - **Validation**: Zod
 - **Real-Time**: Socket.IO
-- **Security**: JWT (`jsonwebtoken`), Bcrypt, Redis sliding-window rate limiter
+- **Security**: JWT (`jsonwebtoken`), Bcrypt, Redis sliding-window rate limiter, Idempotency middleware
 - **API Documentation**: OpenAPI 3.0.3, `swagger-ui-express`, `swagger-jsdoc`
 
 ---

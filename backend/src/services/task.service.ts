@@ -6,14 +6,8 @@ import { emitProjectEvent } from "../sockets/project.socket";
 import { ApiError } from "../utils/ApiError";
 import { deleteFromCloudinary } from "../utils/cloudinary";
 import { NotificationService } from "./notification.service";
-
-/**
- * NOTE ON TRANSACTIONS:
- * This service runs against a standalone MongoDB instance (Docker single-node).
- * Standalone MongoDB does NOT support multi-document transactions or replica-set sessions.
- * All write pairs (read model + event log) use sequential writes with manual
- * compensation rollback on failure instead of session.withTransaction().
- */
+import { addAuditJob } from "../queues/audit.queue";
+import { CacheUtil } from "../utils/cache";
 
 // ─── Pagination Types ─────────────────────────────────────────────────────────
 
@@ -73,13 +67,6 @@ export class TaskService {
 
     /**
      * Creates a new task inside the given project workspace.
-     *
-     * Write order:
-     *   1. Insert Task read model
-     *   2. Insert TaskEvent log entry
-     *      → On failure: compensate by deleting the task that was just created
-     *
-     * Emits: `task:created` to the project room upon success.
      */
     public static async createTask(
         projectId: string,
@@ -89,7 +76,8 @@ export class TaskService {
         assigneeId?: string,
         status: TaskStatus = "todo",
         images: string[] = [],
-        videoUrl?: string | null
+        videoUrl?: string | null,
+        context?: { ip?: string; userAgent?: string; correlationId?: string }
     ): Promise<ITask> {
         // Pre-flight: verify project exists and is not archived
         const project = await Project.findOne({ projectId, isDeleted: { $ne: true } });
@@ -128,7 +116,10 @@ export class TaskService {
         });
         const savedTask = await task.save();
 
-        // 2. Append immutable creation event — compensate on failure
+        // 2. Invalidate project tasks cache
+        await CacheUtil.invalidateTaskCache(projectId);
+
+        // 3. Append immutable creation event
         try {
             await TaskEvent.create({
                 taskId: savedTask.taskId,
@@ -146,18 +137,50 @@ export class TaskService {
                 },
             });
         } catch (eventErr) {
-            // Compensate: remove the task so the DB stays consistent
             await Task.deleteOne({ taskId: savedTask.taskId }).catch(() => { });
             throw new ApiError(500, "Failed to record task creation event. Task rolled back.");
         }
 
+        // 4. Asynchronously enqueue immutable audit log
+        const actorUser = await User.findOne({ "uuid.id": actorId });
+        await addAuditJob({
+            action: "TASK_CREATED",
+            actor: {
+                userId: actorId,
+                email: actorUser?.email || "unknown@teamflow.app",
+                role: "TeamMember",
+            },
+            resource: {
+                type: "TASK",
+                id: savedTask.taskId,
+                name: savedTask.title,
+            },
+            context: {
+                ip: context?.ip,
+                userAgent: context?.userAgent,
+                correlationId: context?.correlationId,
+            },
+            diff: {
+                after: {
+                    title: savedTask.title,
+                    status: savedTask.status,
+                    assigneeId: savedTask.assigneeId,
+                    projectId,
+                },
+            },
+            metadata: {
+                projectId,
+                taskId: savedTask.taskId,
+            },
+        });
+
         const enriched = await TaskService.enrichTasks([savedTask]);
         const enrichedTask = enriched[0];
 
-        // 3. Real-time broadcast to all project room members
+        // 5. Real-time broadcast to all project room members
         emitProjectEvent(projectId, "task:created", enrichedTask);
 
-        // 4. Dispatch in-app notifications and SendGrid emails
+        // 6. Dispatch in-app notifications and SendGrid emails via BullMQ
         NotificationService.notifyTaskCreated(
             projectId,
             project.name,
@@ -174,10 +197,7 @@ export class TaskService {
     }
 
     /**
-     * Retrieves all non-deleted tasks for a project with cursor-based pagination.
-     * Supports optional status column filtering for Kanban-style boards.
-     *
-     * Read-only — no writes performed.
+     * Retrieves all non-deleted tasks for a project with cache-aside support and pagination.
      */
     public static async getProjectTasks(
         projectId: string,
@@ -186,13 +206,17 @@ export class TaskService {
         const { page, limit, status } = query;
         const skip = (page - 1) * limit;
 
-        // Build filter — always exclude soft-deleted tasks
+        const cacheKey = `cache:project:${projectId}:tasks:${page}:${limit}:${status || "all"}`;
+        const cachedData = await CacheUtil.get<PaginatedTasks>(cacheKey);
+        if (cachedData) {
+            return cachedData;
+        }
+
         const filter: Record<string, any> = { projectId, isDeleted: false };
         if (status) {
             filter.status = status;
         }
 
-        // Run count and data queries in parallel for efficiency
         const [total, tasks] = await Promise.all([
             Task.countDocuments(filter),
             Task.find(filter)
@@ -204,7 +228,7 @@ export class TaskService {
 
         const enrichedTasks = await TaskService.enrichTasks(tasks);
 
-        return {
+        const result: PaginatedTasks = {
             tasks: enrichedTasks as unknown as ITask[],
             pagination: {
                 page,
@@ -213,13 +237,15 @@ export class TaskService {
                 totalPages: Math.ceil(total / limit),
             },
         };
+
+        // Cache for 60 seconds
+        await CacheUtil.set(cacheKey, result, 60);
+
+        return result;
     }
 
     /**
-     * Updates any details of a task (title, description, assigneeId, status, images, videoUrl).
-     * Writes corresponding events to the immutable event log and handles rollbacks on failure.
-     *
-     * Emits: `task:updated` (and `task:status_changed` if status changed) to the project room.
+     * Updates details of a task (title, description, assigneeId, status, images, videoUrl).
      */
     public static async updateTask(
         taskId: string,
@@ -232,9 +258,9 @@ export class TaskService {
             images?: string[];
             videoUrl?: string | null;
         },
-        actorId: string
+        actorId: string,
+        context?: { ip?: string; userAgent?: string; correlationId?: string }
     ): Promise<ITask> {
-        // Pre-flight: verify project exists and is not archived
         const project = await Project.findOne({ projectId, isDeleted: { $ne: true } });
         if (!project) {
             throw new ApiError(404, "Project workspace not found or has been deleted");
@@ -243,7 +269,6 @@ export class TaskService {
             throw new ApiError(400, "Cannot modify tasks in an archived project workspace");
         }
 
-        // Validate assignee is a workspace member if provided
         if (updates.assigneeId) {
             const isMember = project.owner === updates.assigneeId || project.members.some((m) => m.userId === updates.assigneeId);
             if (!isMember) {
@@ -251,13 +276,11 @@ export class TaskService {
             }
         }
 
-        // Verify task exists and belongs to this project
         const existingTask = await Task.findOne({ taskId, projectId, isDeleted: false });
         if (!existingTask) {
             throw new ApiError(404, "Task not found or has been deleted");
         }
 
-        // Check target status and enforce mandatory screenshot/image proof for 'done' status
         const targetStatus = updates.status !== undefined ? updates.status : existingTask.status;
         const targetImages = updates.images !== undefined ? updates.images : (existingTask.images || []);
 
@@ -270,10 +293,13 @@ export class TaskService {
 
         const eventsToCreate: any[] = [];
         const fieldsToUpdate: Record<string, any> = {};
+        const beforeDiff: Record<string, any> = {};
+        const afterDiff: Record<string, any> = {};
 
-        // 1. Check title update
         if (updates.title !== undefined && updates.title !== existingTask.title) {
             fieldsToUpdate.title = updates.title;
+            beforeDiff.title = existingTask.title;
+            afterDiff.title = updates.title;
             eventsToCreate.push({
                 taskId,
                 projectId,
@@ -283,11 +309,12 @@ export class TaskService {
             });
         }
 
-        // 2. Check description update
         const previousDesc = existingTask.description || null;
         const newDesc = updates.description === undefined ? undefined : (updates.description || null);
         if (newDesc !== undefined && newDesc !== previousDesc) {
             fieldsToUpdate.description = newDesc;
+            beforeDiff.description = previousDesc;
+            afterDiff.description = newDesc;
             eventsToCreate.push({
                 taskId,
                 projectId,
@@ -297,11 +324,12 @@ export class TaskService {
             });
         }
 
-        // 3. Check assignee update
         const previousAssignee = existingTask.assigneeId || null;
         const newAssignee = updates.assigneeId === undefined ? undefined : (updates.assigneeId || null);
         if (newAssignee !== undefined && newAssignee !== previousAssignee) {
             fieldsToUpdate.assigneeId = newAssignee;
+            beforeDiff.assigneeId = previousAssignee;
+            afterDiff.assigneeId = newAssignee;
             eventsToCreate.push({
                 taskId,
                 projectId,
@@ -311,9 +339,10 @@ export class TaskService {
             });
         }
 
-        // 4. Check status update
         if (updates.status !== undefined && updates.status !== existingTask.status) {
             fieldsToUpdate.status = updates.status;
+            beforeDiff.status = existingTask.status;
+            afterDiff.status = updates.status;
             eventsToCreate.push({
                 taskId,
                 projectId,
@@ -329,7 +358,6 @@ export class TaskService {
             });
         }
 
-        // 5. Check images update
         if (updates.images !== undefined) {
             fieldsToUpdate.images = updates.images;
             eventsToCreate.push({
@@ -346,7 +374,6 @@ export class TaskService {
             });
         }
 
-        // 6. Check videoUrl update
         const previousVideo = existingTask.videoUrl || null;
         const newVideo = updates.videoUrl === undefined ? undefined : (updates.videoUrl || null);
         if (newVideo !== undefined && newVideo !== previousVideo) {
@@ -370,10 +397,8 @@ export class TaskService {
             return enriched[0];
         }
 
-        // Write events
         const createdEvents = await TaskEvent.insertMany(eventsToCreate);
 
-        // Update read model
         let updatedTask: ITask | null;
         try {
             updatedTask = await Task.findOneAndUpdate(
@@ -386,11 +411,43 @@ export class TaskService {
                 throw new Error("Task document disappeared during update");
             }
         } catch (updateErr) {
-            // Compensate: remove the events just written
             const eventIds = createdEvents.map((e) => e._id);
             await TaskEvent.deleteMany({ _id: { $in: eventIds } }).catch(() => { });
             throw new ApiError(500, "Failed to update task. Events rolled back.");
         }
+
+        // Invalidate cached tasks
+        await CacheUtil.invalidateTaskCache(projectId);
+
+        // Asynchronously enqueue audit log
+        const actorUser = await User.findOne({ "uuid.id": actorId });
+        await addAuditJob({
+            action: fieldsToUpdate.status ? "TASK_STATUS_UPDATED" : "TASK_UPDATED",
+            actor: {
+                userId: actorId,
+                email: actorUser?.email || "unknown@teamflow.app",
+                role: "TeamMember",
+            },
+            resource: {
+                type: "TASK",
+                id: taskId,
+                name: updatedTask.title,
+            },
+            context: {
+                ip: context?.ip,
+                userAgent: context?.userAgent,
+                correlationId: context?.correlationId,
+            },
+            diff: {
+                before: beforeDiff,
+                after: afterDiff,
+            },
+            metadata: {
+                projectId,
+                taskId,
+                modifiedFields: Object.keys(fieldsToUpdate),
+            },
+        });
 
         const enriched = await TaskService.enrichTasks([updatedTask]);
         const enrichedTask = enriched[0];
@@ -409,7 +466,7 @@ export class TaskService {
 
         emitProjectEvent(projectId, "task:updated", enrichedTask);
 
-        // Dispatch in-app notifications and SendGrid emails
+        // Dispatch in-app notifications and SendGrid emails via BullMQ
         NotificationService.notifyTaskUpdated({
             projectId,
             projectName: project.name,
@@ -435,21 +492,13 @@ export class TaskService {
 
     /**
      * Soft-deletes a task by flipping isDeleted to true.
-     * Physical deletion is never performed — the record remains for audit purposes.
-     *
-     * Write order:
-     *   1. Flip isDeleted on the read model.
-     *   2. Append TASK_DELETED event to the immutable log.
-     *      → On event write failure: compensate by reverting isDeleted to false.
-     *
-     * Emits: `task:deleted` to the project room upon success.
      */
     public static async softDeleteTask(
         taskId: string,
         projectId: string,
-        actorId: string
+        actorId: string,
+        context?: { ip?: string; userAgent?: string; correlationId?: string }
     ): Promise<{ success: boolean }> {
-        // Pre-flight: verify project exists and is not archived
         const project = await Project.findOne({ projectId, isDeleted: { $ne: true } });
         if (!project) {
             throw new ApiError(404, "Project workspace not found or has been deleted");
@@ -458,16 +507,18 @@ export class TaskService {
             throw new ApiError(400, "Cannot delete tasks in an archived project workspace");
         }
 
-        // Verify task exists and is within scope
         const existingTask = await Task.findOne({ taskId, projectId, isDeleted: false });
         if (!existingTask) {
             throw new ApiError(404, "Task not found or has already been deleted");
         }
 
-        // 1. Flip isDeleted on the read model
+        // 1. Flip isDeleted on read model
         await Task.updateOne({ taskId, projectId }, { $set: { isDeleted: true } });
 
-        // 2. Write the TASK_DELETED event — compensate on failure
+        // 2. Invalidate cache
+        await CacheUtil.invalidateTaskCache(projectId);
+
+        // 3. Write event
         try {
             await TaskEvent.create({
                 taskId,
@@ -480,19 +531,47 @@ export class TaskService {
                 },
             });
         } catch (eventErr) {
-            // Compensate: revert the soft-delete so the task is visible again
             await Task.updateOne({ taskId, projectId }, { $set: { isDeleted: false } }).catch(() => { });
             throw new ApiError(500, "Failed to record deletion event. Task restore attempted.");
         }
 
-        // 3. Real-time broadcast
+        // 4. Asynchronously enqueue audit log
+        const actorUser = await User.findOne({ "uuid.id": actorId });
+        await addAuditJob({
+            action: "TASK_DELETED",
+            actor: {
+                userId: actorId,
+                email: actorUser?.email || "unknown@teamflow.app",
+                role: "TeamMember",
+            },
+            resource: {
+                type: "TASK",
+                id: taskId,
+                name: existingTask.title,
+            },
+            context: {
+                ip: context?.ip,
+                userAgent: context?.userAgent,
+                correlationId: context?.correlationId,
+            },
+            diff: {
+                before: { isDeleted: false },
+                after: { isDeleted: true },
+            },
+            metadata: {
+                projectId,
+                taskId,
+            },
+        });
+
+        // 5. Real-time broadcast
         emitProjectEvent(projectId, "task:deleted", {
             taskId,
             projectId,
             actorId,
         });
 
-        // 4. Dispatch in-app notifications and SendGrid emails
+        // 6. Dispatch in-app notifications and SendGrid emails
         NotificationService.notifyTaskDeleted(
             projectId,
             project.name,
@@ -507,24 +586,17 @@ export class TaskService {
 
     /**
      * Bulk soft-deletes a list of tasks inside a project.
-     *
-     * Write order:
-     *   1. Flip isDeleted on the read models.
-     *   2. Append TASK_DELETED events to the event store.
-     *      → On failure: compensate by reverting isDeleted to false.
-     *
-     * Emits: `task:bulk_deleted` to the project room.
      */
     public static async bulkDeleteTasks(
         taskIds: string[],
         projectId: string,
-        actorId: string
+        actorId: string,
+        context?: { ip?: string; userAgent?: string; correlationId?: string }
     ): Promise<{ success: boolean }> {
         if (taskIds.length === 0) {
             return { success: true };
         }
 
-        // Pre-flight: verify project exists and is not archived
         const project = await Project.findOne({ projectId, isDeleted: { $ne: true } });
         if (!project) {
             throw new ApiError(404, "Project workspace not found or has been deleted");
@@ -533,7 +605,6 @@ export class TaskService {
             throw new ApiError(400, "Cannot delete tasks in an archived project workspace");
         }
 
-        // Verify tasks exist in this project and are active
         const tasks = await Task.find({
             taskId: { $in: taskIds },
             projectId,
@@ -546,13 +617,16 @@ export class TaskService {
 
         const foundTaskIds = tasks.map((t) => t.taskId);
 
-        // 1. Flip isDeleted on the read models
+        // 1. Flip isDeleted on read models
         await Task.updateMany(
             { taskId: { $in: foundTaskIds }, projectId },
             { $set: { isDeleted: true } }
         );
 
-        // 2. Write events — compensate on failure
+        // 2. Invalidate cache
+        await CacheUtil.invalidateTaskCache(projectId);
+
+        // 3. Write events
         const eventsToCreate = tasks.map((t) => ({
             taskId: t.taskId,
             projectId,
@@ -564,11 +638,9 @@ export class TaskService {
             },
         }));
 
-        let createdEvents: any[] = [];
         try {
-            createdEvents = await TaskEvent.insertMany(eventsToCreate);
+            await TaskEvent.insertMany(eventsToCreate);
         } catch (eventErr) {
-            // Compensate: revert soft-delete
             await Task.updateMany(
                 { taskId: { $in: foundTaskIds }, projectId },
                 { $set: { isDeleted: false } }
@@ -576,14 +648,40 @@ export class TaskService {
             throw new ApiError(500, "Failed to record bulk deletion events. Tasks restore attempted.");
         }
 
-        // 3. Real-time broadcast
+        // 4. Asynchronously enqueue audit log
+        const actorUser = await User.findOne({ "uuid.id": actorId });
+        await addAuditJob({
+            action: "TASK_BULK_DELETED",
+            actor: {
+                userId: actorId,
+                email: actorUser?.email || "unknown@teamflow.app",
+                role: "TeamMember",
+            },
+            resource: {
+                type: "PROJECT",
+                id: projectId,
+                name: project.name,
+            },
+            context: {
+                ip: context?.ip,
+                userAgent: context?.userAgent,
+                correlationId: context?.correlationId,
+            },
+            metadata: {
+                projectId,
+                deletedTaskIds: foundTaskIds,
+                count: foundTaskIds.length,
+            },
+        });
+
+        // 5. Real-time broadcast
         emitProjectEvent(projectId, "task:bulk_deleted", {
             taskIds: foundTaskIds,
             projectId,
             actorId,
         });
 
-        // 4. Dispatch in-app notifications and SendGrid emails
+        // 6. Dispatch in-app notifications and SendGrid emails
         for (const t of tasks) {
             NotificationService.notifyTaskDeleted(
                 projectId,
@@ -600,7 +698,6 @@ export class TaskService {
 
     /**
      * Retrieves the full chronological event history for a single task.
-     * Enriches each event record with the actor's profile (name, username, email).
      */
     public static async getTaskEvents(
         taskId: string,
@@ -633,8 +730,7 @@ export class TaskService {
     }
 
     /**
-     * Retrieves all task events scoped to an entire project — across every task.
-     * Sorted chronologically. Useful for a project-level task activity feed.
+     * Retrieves all task events scoped to an entire project.
      */
     public static async getProjectTaskEvents(projectId: string): Promise<any[]> {
         const events = await TaskEvent.find({ projectId })
@@ -659,8 +755,7 @@ export class TaskService {
     }
 
     /**
-     * Deletes a file asset from Cloudinary and optionally removes its URL reference
-     * from a specific Task document in the project workspace.
+     * Deletes a file asset from Cloudinary and removes its reference from task.
      */
     public static async deleteAttachment(
         projectId: string,
@@ -668,14 +763,14 @@ export class TaskService {
         resourceType: "image" | "raw" | "video" | "auto" = "auto",
         taskId?: string,
         fileUrl?: string,
-        actorId?: string
+        actorId?: string,
+        context?: { ip?: string; userAgent?: string; correlationId?: string }
     ): Promise<{
         publicId: string;
         result: string;
         taskId?: string;
         task?: ITask | null;
     }> {
-        // Pre-flight: verify project exists and is not archived
         const project = await Project.findOne({ projectId, isDeleted: { $ne: true } });
         if (!project) {
             throw new ApiError(404, "Project workspace not found or has been deleted");
@@ -684,12 +779,9 @@ export class TaskService {
             throw new ApiError(400, "Cannot delete attachments in an archived project workspace");
         }
 
-        // 1. Delete asset from Cloudinary
         const cloudResult = await deleteFromCloudinary(publicId, { resourceType });
-
         let updatedTask: ITask | null = null;
 
-        // 2. If taskId is supplied, remove the attachment from the Task document
         if (taskId) {
             const existingTask = await Task.findOne({ taskId, projectId, isDeleted: false });
             if (existingTask) {
@@ -721,6 +813,8 @@ export class TaskService {
                         { new: true }
                     );
 
+                    await CacheUtil.invalidateTaskCache(projectId);
+
                     if (savedTask) {
                         if (actorId) {
                             await TaskEvent.create({
@@ -736,6 +830,32 @@ export class TaskService {
                                     title: existingTask.title,
                                 },
                             }).catch(() => {});
+
+                            const actorUser = await User.findOne({ "uuid.id": actorId });
+                            await addAuditJob({
+                                action: "TASK_ATTACHMENT_DELETED",
+                                actor: {
+                                    userId: actorId,
+                                    email: actorUser?.email || "unknown@teamflow.app",
+                                    role: "TeamMember",
+                                },
+                                resource: {
+                                    type: "TASK",
+                                    id: taskId,
+                                    name: existingTask.title,
+                                },
+                                context: {
+                                    ip: context?.ip,
+                                    userAgent: context?.userAgent,
+                                    correlationId: context?.correlationId,
+                                },
+                                metadata: {
+                                    projectId,
+                                    taskId,
+                                    publicId,
+                                    fileUrl,
+                                },
+                            });
                         }
 
                         const enriched = await TaskService.enrichTasks([savedTask]);

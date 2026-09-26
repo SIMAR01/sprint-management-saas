@@ -2,6 +2,7 @@ import { Router } from "express";
 import authRouter from "./auth.routes";
 import projectRouter from "./project.routes";
 import notificationRouter from "./notification.routes";
+import auditRouter from "./audit.routes";
 import { protect } from "../middleware/auth.middleware";
 
 const router = Router();
@@ -14,5 +15,8 @@ router.use("/projects", protect, projectRouter);
 
 // Register notification inbox routes under v1/notifications
 router.use("/notifications", protect, notificationRouter);
+
+// Register audit log routes under v1/audit
+router.use("/audit", protect, auditRouter);
 
 export default router;
