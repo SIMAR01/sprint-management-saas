@@ -8,7 +8,8 @@ import { env } from "../config/env";
 export const COOKIE_OPTIONS: CookieOptions = {
   httpOnly: true,
   secure: env.isProduction,
-  sameSite: "strict",
+  sameSite: env.isProduction ? "strict" : "lax",
+  path: "/",
 };
 
 /**

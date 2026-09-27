@@ -16,7 +16,21 @@ app.use(correlationMiddleware);
 // Global Middlewares
 app.use(
   cors({
-    origin: env.CORS_ORIGIN,
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. mobile apps, curl, Swagger UI) or trusted origins
+      if (!origin) return callback(null, true);
+      const allowedOrigins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        ...(env.CORS_ORIGIN ? [env.CORS_ORIGIN] : []),
+      ];
+      if (allowedOrigins.includes(origin) || !env.isProduction) {
+        return callback(null, true);
+      }
+      return callback(new ApiError(403, "Not allowed by CORS"));
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization", "x-idempotency-key", "x-correlation-id"],

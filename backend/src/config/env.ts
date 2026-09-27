@@ -81,8 +81,8 @@ if (isProd && (!jwtSecret || jwtSecret.length < 32)) {
 
 const swaggerServerUrl = process.env.SWAGGER_SERVER_URL || `http://localhost:${port}`;
 const swaggerRoute = process.env.SWAGGER_ROUTE || "/api/docs";
-const swaggerEnabled = process.env.SWAGGER_ENABLED !== undefined 
-  ? process.env.SWAGGER_ENABLED === "true" 
+const swaggerEnabled = process.env.SWAGGER_ENABLED !== undefined
+  ? process.env.SWAGGER_ENABLED === "true"
   : true;
 
 const sendGridApiKey = process.env.SENDGRID_API_KEY || "";
