@@ -163,45 +163,81 @@ APP_URL=http://localhost:3000
 
 ---
 
-## Architectural Deep-Dives
-- [Authentication & Multi-Device Session Architecture](docs/authentication_architecture.md)
-- [Project & Workspace Management Architecture](docs/project_workspace.md)
-- [In-App Notifications & SendGrid Email Architecture](docs/notifications_and_emails.md)
+## Documentation & Specifications
+- 📄 **[Functional Requirements Document (FRD)](docs/FUNCTIONAL_REQUIREMENTS_DOCUMENT.md)**
+- 🔌 **[Frontend API Integration Reference](FRONTEND_API_INTEGRATION.md)**
+- 🔐 **[Authentication & Multi-Device Session Architecture](docs/authentication_architecture.md)**
+- 📁 **[Project & Workspace Management Architecture](docs/project_workspace.md)**
+- 🔔 **[In-App Notifications & SendGrid Email Architecture](docs/notifications_and_emails.md)**
+- 📊 **[Audit Logging & Queue Pipeline](docs/audit_logging_and_queue_pipeline.md)**
 
 ---
 
 ## Getting Started
 
 ### Prerequisites
-- [Node.js](https://nodejs.org/) (v18+ recommended, v24 supported)
-- [MongoDB](https://www.mongodb.com/) (running on port 27017)
-- [Redis](https://redis.io/) (running on port 6379)
-- *(Optional)* [Docker & Docker Compose](https://www.docker.com/)
+- [Docker & Docker Compose](https://www.docker.com/) (Recommended for backend + DB services)
+- [Node.js](https://nodejs.org/) (v18+ recommended) & `npm`
 
-### Running with Docker Compose
-To start MongoDB, Redis, and the backend service all at once:
+---
+
+### Step 1: Start Backend Services with Docker Compose
+
+The complete backend infrastructure (MongoDB, Redis, and Express API server) can be spun up with a single command from the project root:
+
 ```bash
-docker-compose up --build
+docker compose up --build
 ```
 
-### Running Locally
-1. Navigate to the backend directory:
+* **Backend API Server**: [http://localhost:5000](http://localhost:5000)
+* **Interactive Swagger UI**: [http://localhost:5000/api/docs](http://localhost:5000/api/docs)
+* **MongoDB**: `localhost:27017`
+* **Redis**: `localhost:6379`
+
+> [!TIP]
+> To run the backend in detached background mode, use: `docker compose up -d --build`
+
+---
+
+### Step 2: Start Frontend Application
+
+In a separate terminal, navigate to the `/frontend` directory and start the Vite development server:
+
+```bash
+# 1. Navigate to frontend directory
+cd frontend
+
+# 2. Install frontend dependencies (if not already installed)
+npm install
+
+# 3. Start development server
+npm run dev
+```
+
+* **Frontend Web App**: [http://localhost:3000](http://localhost:3000) (or the port specified by Vite)
+
+---
+
+### Running Backend Locally (Without Docker)
+
+If you prefer to run MongoDB and Redis locally without Docker:
+
+1. **Navigate to the backend directory**:
    ```bash
    cd backend
    ```
-2. Install dependencies:
+2. **Install dependencies**:
    ```bash
    npm install
    ```
-3. Copy environment configuration:
+3. **Configure environment**:
    ```bash
    cp .env.example .env
    ```
-4. Start development server with live reload:
+4. **Start backend development server**:
    ```bash
    npm run dev
    ```
-5. Open Swagger UI at [http://localhost:5000/api/docs](http://localhost:5000/api/docs).
 
 ---
 
