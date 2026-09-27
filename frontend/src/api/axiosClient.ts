@@ -3,10 +3,40 @@ import axios, { AxiosError } from 'axios';
 // In-memory access token storage to prevent XSS
 let inMemoryToken = '';
 
+const REFRESH_STORAGE_KEY = 'taskpilot_refresh_token';
+
 export const getAccessToken = () => inMemoryToken;
 
 export const setAccessToken = (token: string) => {
   inMemoryToken = token;
+};
+
+export const getBackupRefreshToken = (): string | null => {
+  try {
+    return localStorage.getItem(REFRESH_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+};
+
+export const setBackupRefreshToken = (token: string) => {
+  try {
+    if (token) {
+      localStorage.setItem(REFRESH_STORAGE_KEY, token);
+    } else {
+      localStorage.removeItem(REFRESH_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+};
+
+export const clearBackupRefreshToken = () => {
+  try {
+    localStorage.removeItem(REFRESH_STORAGE_KEY);
+  } catch {
+    // Ignore storage errors
+  }
 };
 
 // Create the global Axios client
@@ -58,7 +88,13 @@ axiosClient.interceptors.request.use(
 
 // Response Interceptor: Handle 401 Unauthorized errors with Refresh Token rotation
 axiosClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // If response returns fresh tokens in body, sync backup token
+    if (response.data?.data?.refreshToken) {
+      setBackupRefreshToken(response.data.data.refreshToken);
+    }
+    return response;
+  },
   async (error: AxiosError) => {
     const originalRequest = error.config;
     if (!originalRequest) {
@@ -98,18 +134,31 @@ axiosClient.interceptors.response.use(
       isRefreshing = true;
 
       try {
+        const backupRefreshToken = getBackupRefreshToken();
+
         // Call backend refresh-token endpoint to rotate/obtain new access token
         const refreshResponse = await axios.post<{
           success: boolean;
-          data: { accessToken: string };
+          data: { accessToken: string; refreshToken?: string };
         }>(
           `${axiosClient.defaults.baseURL}/auth/refresh-token`,
-          {},
-          { withCredentials: true }
+          { refreshToken: backupRefreshToken || undefined },
+          {
+            withCredentials: true,
+            headers: {
+              'Content-Type': 'application/json',
+              ...(inMemoryToken ? { Authorization: `Bearer ${inMemoryToken}` } : {}),
+            },
+          }
         );
 
         const newAccessToken = refreshResponse.data.data.accessToken;
+        const newRefreshToken = refreshResponse.data.data.refreshToken;
+
         setAccessToken(newAccessToken);
+        if (newRefreshToken) {
+          setBackupRefreshToken(newRefreshToken);
+        }
 
         // Process queue with new token
         processQueue(null, newAccessToken);
@@ -128,8 +177,9 @@ axiosClient.interceptors.response.use(
         // Refresh token failed (e.g. expired/revoked)
         processQueue(refreshError, null);
 
-        // Wipe in-memory token
+        // Wipe in-memory and backup tokens
         setAccessToken('');
+        clearBackupRefreshToken();
 
         // Dispatch event so AuthContext/UI knows to log the user out and redirect
         window.dispatchEvent(new Event('auth:unauthorized'));

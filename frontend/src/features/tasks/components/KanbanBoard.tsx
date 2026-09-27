@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
+import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
 import {
   useProjectTasksQuery,
   useCreateTaskMutation,
@@ -39,13 +40,14 @@ import {
   Eye,
   Check,
   Film,
+  GripVertical,
 } from "lucide-react";
 
 const COLUMNS: { id: TaskStatus; label: string; color: string }[] = [
-  { id: "todo", label: "To Do", color: "text-slate-400 bg-slate-500/10 border-slate-500/20" },
-  { id: "inprogress", label: "In Progress", color: "text-brand-400 bg-brand-500/10 border-brand-500/20" },
-  { id: "underreview", label: "Review", color: "text-amber-400 bg-amber-500/10 border-amber-500/20" },
-  { id: "done", label: "Done", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" },
+  { id: "todo", label: "To Do", color: "text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-500/10 border-slate-200 dark:border-slate-500/20" },
+  { id: "inprogress", label: "In Progress", color: "text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-500/10 border-brand-200 dark:border-brand-500/20" },
+  { id: "underreview", label: "Review", color: "text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20" },
+  { id: "done", label: "Done", color: "text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20" },
 ];
 
 const isPdf = (url: string) => url.toLowerCase().endsWith(".pdf") || url.includes("/raw/upload/") || url.includes(".pdf?");
@@ -221,6 +223,53 @@ export const KanbanBoard: React.FC = () => {
     );
   };
 
+  const handleDragEnd = (result: DropResult) => {
+    const { destination, source, draggableId } = result;
+
+    if (!destination) return;
+
+    if (
+      destination.droppableId === source.droppableId &&
+      destination.index === source.index
+    ) {
+      return;
+    }
+
+    const sourceStatus = source.droppableId as TaskStatus;
+    const destStatus = destination.droppableId as TaskStatus;
+
+    if (sourceStatus === destStatus) {
+      return;
+    }
+
+    const draggedTask = tasks.find((t) => t.taskId === draggableId);
+    if (!draggedTask) return;
+
+    // Warning if moving to Done without proof attachments
+    if (destStatus === "done" && (!draggedTask.images || draggedTask.images.length === 0)) {
+      if (!window.confirm("Moving to Done without proof attachments. Are you sure you want to proceed?")) {
+        return;
+      }
+    }
+
+    const destCol = COLUMNS.find((c) => c.id === destStatus);
+    const destLabel = destCol ? destCol.label : destStatus.toUpperCase();
+
+    updateMutation.mutate(
+      { taskId: draggableId, updates: { status: destStatus } },
+      {
+        onSuccess: () => {
+          triggerBoardSuccess(`Task moved to ${destLabel}`);
+        },
+        onError: (err: any) => {
+          triggerBoardError(
+            err.response?.data?.message || err.message || `Failed to move task to ${destLabel}`
+          );
+        },
+      }
+    );
+  };
+
   const getNextStatus = (current: TaskStatus): TaskStatus | null => {
     const idx = COLUMNS.findIndex((c) => c.id === current);
     if (idx < COLUMNS.length - 1) return COLUMNS[idx + 1].id;
@@ -239,8 +288,8 @@ export const KanbanBoard: React.FC = () => {
     return (
       <div className="flex-1 flex flex-col items-center justify-center min-h-[50vh] text-center">
         <AlertCircle className="w-10 h-10 text-red-500 mb-4" />
-        <h3 className="text-lg font-bold text-slate-200">Failed to load board</h3>
-        <button onClick={() => navigate("/dashboard")} className="mt-4 text-brand-400 hover:underline">
+        <h3 className="text-lg font-bold text-slate-800 dark:text-slate-200">Failed to load board</h3>
+        <button onClick={() => navigate("/dashboard")} className="mt-4 text-brand-600 dark:text-brand-400 hover:underline">
           Return to Dashboard
         </button>
       </div>
@@ -255,14 +304,14 @@ export const KanbanBoard: React.FC = () => {
     <div className="flex flex-col h-full space-y-6 animate-fade-in">
       {/* Board Success Banner */}
       {boardSuccess && (
-        <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 p-3.5 rounded-xl text-xs flex items-center justify-between animate-fade-in">
+        <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-800 dark:text-emerald-200 p-3.5 rounded-xl text-xs flex items-center justify-between animate-fade-in">
           <div className="flex items-center gap-2">
-            <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+            <Check className="w-4 h-4 text-emerald-500 dark:text-emerald-400 shrink-0" />
             <span>{boardSuccess}</span>
           </div>
           <button
             onClick={() => setBoardSuccess(null)}
-            className="text-slate-400 hover:text-slate-200 p-1 hover:bg-slate-800/50 rounded-lg"
+            className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 hover:bg-slate-200/50 dark:hover:bg-slate-800/50 rounded-lg"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -271,14 +320,14 @@ export const KanbanBoard: React.FC = () => {
 
       {/* Board Error Banner */}
       {boardError && (
-        <div className="bg-red-500/10 border border-red-500/30 text-red-200 p-3.5 rounded-xl text-xs flex items-center justify-between animate-fade-in">
+        <div className="bg-red-500/10 border border-red-500/30 text-red-800 dark:text-red-200 p-3.5 rounded-xl text-xs flex items-center justify-between animate-fade-in">
           <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+            <AlertCircle className="w-4 h-4 text-red-500 dark:text-red-400 shrink-0" />
             <span>{boardError}</span>
           </div>
           <button
             onClick={() => setBoardError(null)}
-            className="text-slate-400 hover:text-slate-200 p-1 hover:bg-slate-800/50 rounded-lg"
+            className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 hover:bg-slate-200/50 dark:hover:bg-slate-800/50 rounded-lg"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -290,12 +339,12 @@ export const KanbanBoard: React.FC = () => {
         <div>
           <button
             onClick={() => navigate("/dashboard")}
-            className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 hover:text-slate-200 transition-colors mb-2"
+            className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-colors mb-2"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
             <span>Back to Workspaces</span>
           </button>
-          <h2 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
+          <h2 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-brand-600 to-violet-500 flex items-center justify-center shadow-md shadow-brand-500/20">
               <Kanban className="w-5 h-5 text-white" />
             </div>
@@ -313,11 +362,11 @@ export const KanbanBoard: React.FC = () => {
       </div>
 
       {/* Controls: Filters + Bulk Mode Actions */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-4 rounded-2xl glass-card border border-slate-800/80">
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-4 rounded-2xl glass-card border border-slate-200/90 dark:border-slate-800/80">
         {/* Left Side: Local Filters */}
         <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-          <div className="flex items-center gap-1.5 text-slate-400 text-xs font-bold uppercase tracking-wider">
-            <Filter className="w-3.5 h-3.5 text-brand-400" />
+          <div className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400 text-xs font-bold uppercase tracking-wider">
+            <Filter className="w-3.5 h-3.5 text-brand-500 dark:text-brand-400" />
             <span>Filters:</span>
           </div>
 
@@ -326,7 +375,7 @@ export const KanbanBoard: React.FC = () => {
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-brand-500 cursor-pointer"
+              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 dark:text-slate-300 focus:outline-none focus:border-brand-500 cursor-pointer shadow-sm"
             >
               <option value="all">All Statuses</option>
               <option value="todo">To Do</option>
@@ -341,7 +390,7 @@ export const KanbanBoard: React.FC = () => {
             <select
               value={assigneeFilter}
               onChange={(e) => setAssigneeFilter(e.target.value)}
-              className="bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-brand-500 cursor-pointer"
+              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 dark:text-slate-300 focus:outline-none focus:border-brand-500 cursor-pointer shadow-sm"
             >
               <option value="all">All Assignees</option>
               <option value="unassigned">Unassigned</option>
@@ -358,7 +407,7 @@ export const KanbanBoard: React.FC = () => {
         <div className="flex items-center gap-3 w-full md:w-auto justify-end">
           {isBulkMode ? (
             <div className="flex items-center gap-2 w-full justify-between md:justify-end">
-              <span className="text-xs text-brand-400 font-semibold">
+              <span className="text-xs text-brand-600 dark:text-brand-400 font-semibold">
                 {selectedTaskIds.length} selected
               </span>
 
@@ -371,14 +420,14 @@ export const KanbanBoard: React.FC = () => {
                       setSelectedTaskIds(filteredTasks.map((t) => t.taskId));
                     }
                   }}
-                  className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium rounded-lg border border-slate-700 transition-all"
+                  className="px-3 py-1.5 text-xs bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-medium rounded-lg border border-slate-200 dark:border-slate-700 transition-all"
                 >
                   {selectedTaskIds.length === filteredTasks.length ? "Deselect All" : "Select All"}
                 </button>
                 <button
                   disabled={selectedTaskIds.length === 0 || bulkDeleteMutation.isPending}
                   onClick={() => setBulkConfirmOpen(true)}
-                  className="px-3 py-1.5 text-xs bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white font-medium rounded-lg transition-all flex items-center gap-1"
+                  className="px-3 py-1.5 text-xs bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white font-medium rounded-lg transition-all flex items-center gap-1 shadow-sm"
                 >
                   {bulkDeleteMutation.isPending && <Loader2 className="w-3 animate-spin" />}
                   <span>Delete Selected</span>
@@ -388,7 +437,7 @@ export const KanbanBoard: React.FC = () => {
                     setIsBulkMode(false);
                     setSelectedTaskIds([]);
                   }}
-                  className="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors"
+                  className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 transition-colors"
                 >
                   Cancel
                 </button>
@@ -397,64 +446,99 @@ export const KanbanBoard: React.FC = () => {
           ) : (
             <button
               onClick={() => setIsBulkMode(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-slate-100 font-medium rounded-lg transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 font-medium rounded-lg transition-all shadow-sm"
             >
-              <CheckSquare className="w-3.5 h-3.5 text-slate-500" />
+              <CheckSquare className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
               <span>Bulk Select</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Kanban Columns Grid */}
-      <div className="flex-1 overflow-x-auto overflow-y-hidden pb-4">
-        <div className="flex gap-6 h-full min-w-max">
-          {COLUMNS.map((col) => {
-            const columnTasks = filteredTasks.filter((t) => t.status === col.id);
-            return (
-              <div key={col.id} className="w-80 flex flex-col h-[calc(100vh-270px)] min-h-[420px] shrink-0">
-                {/* Column Header */}
-                <div className="flex items-center justify-between mb-3 px-1">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200 flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full bg-current ${col.color.split(" ")[0]}`} />
-                    {col.label}
-                  </h3>
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${col.color}`}>
-                    {columnTasks.length}
-                  </span>
-                </div>
+      {/* Kanban Drag & Drop Columns Grid */}
+      <DragDropContext onDragEnd={handleDragEnd}>
+        <div className="flex-1 overflow-x-auto overflow-y-hidden pb-4">
+          <div className="flex gap-6 h-full min-w-max">
+            {COLUMNS.map((col) => {
+              const columnTasks = filteredTasks.filter((t) => t.status === col.id);
+              return (
+                <div key={col.id} className="w-80 flex flex-col h-[calc(100vh-270px)] min-h-[420px] shrink-0">
+                  {/* Column Header */}
+                  <div className="flex items-center justify-between mb-3 px-1">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full bg-current ${col.color.split(" ")[0]}`} />
+                      {col.label}
+                    </h3>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${col.color}`}>
+                      {columnTasks.length}
+                    </span>
+                  </div>
 
-                {/* Task Card List */}
-                <div className="flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
-                  {columnTasks.map((task) => (
-                    <TaskCard
-                      key={task.taskId}
-                      task={task}
-                      onMove={() => handleMoveTask(task)}
-                      onDelete={() => setTaskToDelete(task)}
-                      onClick={() => setSelectedTaskForEdit(task)}
-                      isBulkMode={isBulkMode}
-                      isSelected={selectedTaskIds.includes(task.taskId)}
-                      onSelectToggle={() => {
-                        setSelectedTaskIds((prev) =>
-                          prev.includes(task.taskId)
-                            ? prev.filter((id) => id !== task.taskId)
-                            : [...prev, task.taskId]
-                        );
-                      }}
-                    />
-                  ))}
-                  {columnTasks.length === 0 && (
-                    <div className="h-28 rounded-2xl border-2 border-dashed border-slate-800/60 flex flex-col items-center justify-center text-xs text-slate-500 font-medium">
-                      <span>No tasks in {col.label}</span>
-                    </div>
-                  )}
+                  {/* Task Card List Droppable */}
+                  <Droppable droppableId={col.id}>
+                    {(provided, snapshot) => (
+                      <div
+                        ref={provided.innerRef}
+                        {...provided.droppableProps}
+                        className={`flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-slate-300 dark:scrollbar-thumb-slate-800 scrollbar-track-transparent rounded-2xl p-1.5 transition-colors duration-200 ${
+                          snapshot.isDraggingOver
+                            ? "bg-brand-500/[0.08] border-2 border-dashed border-brand-500/50"
+                            : "border-2 border-transparent"
+                        }`}
+                      >
+                        {columnTasks.map((task, index) => (
+                          <Draggable
+                            key={task.taskId}
+                            draggableId={task.taskId}
+                            index={index}
+                            isDragDisabled={isBulkMode}
+                          >
+                            {(dragProvided, dragSnapshot) => (
+                              <div
+                                ref={dragProvided.innerRef}
+                                {...dragProvided.draggableProps}
+                                {...dragProvided.dragHandleProps}
+                                className={`transition-all ${
+                                  dragSnapshot.isDragging
+                                    ? "shadow-2xl ring-2 ring-brand-500 rounded-2xl scale-[1.02] opacity-95 cursor-grabbing z-50"
+                                    : "cursor-grab active:cursor-grabbing"
+                                }`}
+                              >
+                                <TaskCard
+                                  task={task}
+                                  onMove={() => handleMoveTask(task)}
+                                  onDelete={() => setTaskToDelete(task)}
+                                  onClick={() => setSelectedTaskForEdit(task)}
+                                  isBulkMode={isBulkMode}
+                                  isSelected={selectedTaskIds.includes(task.taskId)}
+                                  onSelectToggle={() => {
+                                    setSelectedTaskIds((prev) =>
+                                      prev.includes(task.taskId)
+                                        ? prev.filter((id) => id !== task.taskId)
+                                        : [...prev, task.taskId]
+                                    );
+                                  }}
+                                />
+                              </div>
+                            )}
+                          </Draggable>
+                        ))}
+                        {provided.placeholder}
+                        {columnTasks.length === 0 && !snapshot.isDraggingOver && (
+                          <div className="h-28 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-800/60 flex flex-col items-center justify-center text-xs text-slate-400 dark:text-slate-500 font-medium">
+                            <span>No tasks in {col.label}</span>
+                            <span className="text-[10px] text-slate-400/80 dark:text-slate-500/80 mt-0.5">Drag tasks here</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </Droppable>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
-      </div>
+      </DragDropContext>
 
       {/* Create Task Modal */}
       {isCreateOpen && (
@@ -783,19 +867,22 @@ const TaskCard: React.FC<{
   return (
     <div
       onClick={handleCardClick}
-      className={`cursor-pointer glass-card p-4 rounded-2xl border transition-all relative bg-slate-900/50 hover:shadow-lg ${
+      className={`cursor-pointer glass-card p-4 rounded-2xl border transition-all relative bg-white dark:bg-slate-900/50 hover:shadow-lg ${
         isBulkMode
           ? isSelected
-            ? "border-brand-500/80 bg-brand-500/10 shadow-md shadow-brand-500/5"
-            : "border-slate-800/80 hover:border-slate-700 hover:bg-slate-900/40"
-          : "border-slate-800/80 hover:border-slate-700 hover:bg-slate-900/40"
+            ? "border-brand-500 bg-brand-50/80 dark:bg-brand-500/10 shadow-md shadow-brand-500/5"
+            : "border-slate-200/90 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-900/40"
+          : "border-slate-200/90 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-900/40"
       }`}
     >
       {/* Top row: Status/Time + Menu */}
       <div className="flex items-start justify-between mb-2">
-        <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+        <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+          {!isBulkMode && (
+            <GripVertical className="w-3.5 h-3.5 text-slate-400/60 dark:text-slate-600 hover:text-slate-600 dark:hover:text-slate-300 transition-colors shrink-0" />
+          )}
           {isBulkMode && (
-            <span className="mr-1 mt-0.5 shrink-0 text-brand-400">
+            <span className="mr-1 mt-0.5 shrink-0 text-brand-600 dark:text-brand-400">
               {isSelected ? (
                 <CheckSquare className="w-3.5 h-3.5" />
               ) : (
@@ -814,7 +901,7 @@ const TaskCard: React.FC<{
                 e.stopPropagation();
                 setShowMenu(!showMenu);
               }}
-              className="p-1 rounded-md text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors"
+              className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
             >
               <MoreVertical className="w-4 h-4" />
             </button>
@@ -828,14 +915,14 @@ const TaskCard: React.FC<{
                     setShowMenu(false);
                   }}
                 />
-                <div className="absolute right-0 top-full mt-1 w-32 bg-slate-800 border border-slate-700 rounded-xl shadow-xl py-1 z-20 animate-scale-in">
+                <div className="absolute right-0 top-full mt-1 w-32 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl py-1 z-20 animate-scale-in">
                   <button
                     onMouseDown={(e) => {
                       e.stopPropagation();
                       onDelete();
                       setShowMenu(false);
                     }}
-                    className="w-full text-left px-3 py-1.5 text-xs text-red-400 hover:bg-slate-700 flex items-center gap-2"
+                    className="w-full text-left px-3 py-1.5 text-xs text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-slate-700 flex items-center gap-2"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     Delete
@@ -847,12 +934,12 @@ const TaskCard: React.FC<{
         )}
       </div>
 
-      <h4 className="text-sm font-semibold text-slate-100 mb-1 leading-snug break-words">
+      <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-1 leading-snug break-words">
         {task.title}
       </h4>
 
       {task.description && (
-        <p className="text-xs text-slate-400 line-clamp-2 mb-3">
+        <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-2 mb-3">
           {task.description}
         </p>
       )}
@@ -861,14 +948,14 @@ const TaskCard: React.FC<{
       {(imagesCount > 0 || hasVideo) && (
         <div className="flex items-center gap-2 my-2.5 flex-wrap">
           {imagesCount > 0 && (
-            <span className="flex items-center gap-1 text-[10px] font-semibold text-brand-300 bg-brand-500/10 px-2 py-0.5 rounded-full border border-brand-500/20">
+            <span className="flex items-center gap-1 text-[10px] font-semibold text-brand-700 dark:text-brand-300 bg-brand-50 dark:bg-brand-500/10 px-2 py-0.5 rounded-full border border-brand-200 dark:border-brand-500/20">
               <Paperclip className="w-3 h-3" />
               <span>{imagesCount} {imagesCount === 1 ? 'file' : 'files'}</span>
             </span>
           )}
 
           {hasVideo && (
-            <span className="flex items-center gap-1 text-[10px] font-semibold text-purple-300 bg-purple-500/10 px-2 py-0.5 rounded-full border border-purple-500/20">
+            <span className="flex items-center gap-1 text-[10px] font-semibold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-500/10 px-2 py-0.5 rounded-full border border-purple-200 dark:border-purple-500/20">
               <Video className="w-3 h-3" />
               <span>Demo</span>
             </span>
@@ -877,7 +964,7 @@ const TaskCard: React.FC<{
       )}
 
       {/* Bottom actions */}
-      <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-800/60">
+      <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100 dark:border-slate-800/60">
         <div className="text-[10px] text-slate-500 truncate max-w-[200px]" title={task.assignee?.name || "Unassigned"}>
           {task.assignee?.name ? `Assignee: ${task.assignee.name}` : task.assigneeId ? `Assignee: ${task.assigneeId.substring(0, 8)}...` : 'Unassigned'}
         </div>
@@ -889,12 +976,12 @@ const TaskCard: React.FC<{
               onMove();
             }}
             title="Move to next stage"
-            className="p-1.5 rounded-lg bg-slate-800 hover:bg-brand-500/20 text-slate-400 hover:text-brand-400 border border-slate-700 hover:border-brand-500/30 transition-all"
+            className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-brand-50 dark:hover:bg-brand-500/20 text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 border border-slate-200 dark:border-slate-700 hover:border-brand-300 dark:hover:border-brand-500/30 transition-all"
           >
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         ) : (
-          <div className="p-1.5 rounded-lg text-emerald-400 bg-emerald-500/10 border border-emerald-500/20">
+          <div className="p-1.5 rounded-lg text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20">
             <CheckCircle2 className="w-3.5 h-3.5" />
           </div>
         )}

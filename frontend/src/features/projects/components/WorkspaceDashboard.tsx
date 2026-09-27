@@ -87,9 +87,6 @@ export const WorkspaceDashboard: React.FC = () => {
     return isOwner || membership?.role === "ProjectManager";
   };
 
-  // Global RBAC restriction to hide/shield "Create Project" button
-  const canCreateGlobal = user?.role === "ProjectManager" || user?.role === undefined;
-
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setActionError(null);
@@ -199,19 +196,17 @@ export const WorkspaceDashboard: React.FC = () => {
           </p>
         </div>
 
-        {/* Global shielded creation button */}
-        {canCreateGlobal && (
-          <button
-            onClick={() => {
-              resetForm();
-              setIsCreateOpen(true);
-            }}
-            className="flex items-center justify-center gap-1.5 bg-gradient-to-tr from-brand-600 to-violet-500 hover:from-brand-500 hover:to-violet-400 active:scale-98 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all shadow-md shadow-brand-500/10 shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Create Project</span>
-          </button>
-        )}
+        {/* Create Workspace Action Button */}
+        <button
+          onClick={() => {
+            resetForm();
+            setIsCreateOpen(true);
+          }}
+          className="flex items-center justify-center gap-1.5 bg-gradient-to-tr from-brand-600 to-violet-500 hover:from-brand-500 hover:to-violet-400 active:scale-98 text-white font-medium py-2 px-4 rounded-xl text-sm transition-all shadow-md shadow-brand-500/20 shrink-0"
+        >
+          <Plus className="w-4 h-4" />
+          <span>Create New Workspace</span>
+        </button>
       </div>
 
       {/* Filter and search bar */}
@@ -279,7 +274,7 @@ export const WorkspaceDashboard: React.FC = () => {
           </p>
         </div>
       ) : displayedWorkspaces.length === 0 ? (
-        <div className="glass-card rounded-2xl p-10 text-center border-dashed border-slate-800">
+        <div className="glass-card rounded-2xl p-10 text-center border-dashed border-slate-800 flex flex-col items-center justify-center">
           <FolderKanban className="w-10 h-10 text-slate-600 mx-auto mb-4" />
           <h3 className="text-base font-semibold text-slate-200">
             {activeTab === "active" ? "No active workspaces found" : "No archived workspaces found"}
@@ -288,9 +283,21 @@ export const WorkspaceDashboard: React.FC = () => {
             {searchQuery
               ? "No workspaces match your query filter. Try refining your keywords."
               : activeTab === "active"
-                ? "You do not have any active project workspaces currently."
+                ? "You do not have any active project workspaces currently. Create one to get started!"
                 : "No deleted/archived project workspaces available."}
           </p>
+          {activeTab === "active" && !searchQuery && (
+            <button
+              onClick={() => {
+                resetForm();
+                setIsCreateOpen(true);
+              }}
+              className="mt-5 flex items-center justify-center gap-1.5 bg-gradient-to-tr from-brand-600 to-violet-500 hover:from-brand-500 hover:to-violet-400 active:scale-98 text-white font-medium py-2 px-4 rounded-xl text-sm transition-all shadow-md shadow-brand-500/20"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Create New Workspace</span>
+            </button>
+          )}
         </div>
       ) : (
         /* Workspaces Grid */

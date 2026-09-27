@@ -20,9 +20,18 @@ const getCookieValue = (req: Request, cookieName: string): string | undefined =>
 
   const cookies = cookieHeader.split(";");
   for (const cookie of cookies) {
-    const [key, value] = cookie.trim().split("=");
-    if (key === cookieName) {
-      return value;
+    const trimmed = cookie.trim();
+    const equalIdx = trimmed.indexOf("=");
+    if (equalIdx !== -1) {
+      const key = trimmed.slice(0, equalIdx).trim();
+      const value = trimmed.slice(equalIdx + 1).trim();
+      if (key === cookieName) {
+        try {
+          return decodeURIComponent(value);
+        } catch {
+          return value;
+        }
+      }
     }
   }
   return undefined;

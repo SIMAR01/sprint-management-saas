@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User } from '../features/auth/types/auth.types';
-import { axiosClient, getAccessToken, setAccessToken } from '../api/axiosClient';
+import { axiosClient, getAccessToken, setAccessToken, getBackupRefreshToken, setBackupRefreshToken, clearBackupRefreshToken } from '../api/axiosClient';
 
 interface AuthContextType {
   user: User | null;
@@ -23,12 +23,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // If we don't have an access token in-memory, perform a silent refresh first
       if (!token) {
+        const backupRefreshToken = getBackupRefreshToken();
         const refreshResponse = await axiosClient.post<{
           success: boolean;
-          data: { accessToken: string };
-        }>('/auth/refresh-token');
+          data: { accessToken: string; refreshToken?: string };
+        }>('/auth/refresh-token', {
+          refreshToken: backupRefreshToken || undefined,
+        });
+
         token = refreshResponse.data.data.accessToken;
+        const newRefreshToken = refreshResponse.data.data.refreshToken;
+
         setAccessToken(token);
+        if (newRefreshToken) {
+          setBackupRefreshToken(newRefreshToken);
+        }
       }
 
       // Fetch profile using the access token
@@ -49,6 +58,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (error) {
       setUser(null);
       setAccessToken('');
+      clearBackupRefreshToken();
     }
   };
 
@@ -60,6 +70,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = () => {
     setUser(null);
     setAccessToken('');
+    clearBackupRefreshToken();
   };
 
   useEffect(() => {
