@@ -137,3 +137,42 @@ The frontend maintains real-time WebSocket connectivity authenticated by the use
   - Attachment gallery with thumbnail image preview lightbox, PDF document chip (with direct open in new tab), and file deletion from Cloudinary.
   - Demo video URL viewer and editor.
   - Audit event history timeline.
+
+---
+
+## 5. Admin Audit Console & Analytics (`/dashboard/admin/audit`)
+
+Accessible strictly to users with `role === 'admin'`. Non-admin users are automatically guarded and redirected to `/dashboard`.
+
+### 5.1. Admin API Route Contract
+
+| Method | Endpoint | Description | Payload / Query |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/audit` | Paginated system-wide audit event logs with multi-field search and filters | Query: `page`, `limit`, `resource`, `action`, `search`, `startDate`, `endDate` |
+
+### 5.2. Admin Architecture & Components
+- **Role Guard (`AdminRoute` in `App.tsx`)**: Enforces `user.role === 'admin'` check before mounting admin views. Non-admins receive an immediate redirect to `/dashboard`.
+- **Sidebar Integration (`DashboardLayout.tsx`)**: The "Admin Console" navigation entry with shield icon is only rendered for authenticated admins.
+- **Audit Dashboard (`AdminAuditDashboard.tsx`)**:
+  - Live monitor mode (auto-refresh interval toggle).
+  - Comprehensive filters: resource selector (`task`, `project`, `auth`, `user`, `notification`, `session`), action type selector (`CREATE`, `UPDATE`, `DELETE`, `LOGIN`, `LOGOUT`, etc.), time presets (Today, 7D, 30D, All Time), and full-text keyword search.
+  - Tabular data viewer displaying timestamp, actor email/ID, HTTP action, target resource, IP address/user-agent, and status badge.
+  - JSON audit stream export for compliance reporting.
+- **Visual Analytics Charts (`AuditAnalyticsCharts.tsx`)**:
+  - Total events, Unique Actors, Mutation rate, and Active Projects metric cards.
+  - Daily/Hourly event volume distribution bar chart with interactive hovering.
+  - Resource type breakdown progress bars.
+- **State Diff Inspector (`AuditDetailModal.tsx`)**:
+  - Actor metadata and IP geolocation/correlation IDs.
+  - Side-by-side Before vs. After JSON state diffing for all update/delete mutations.
+  - Direct clipboard copy of JSON logs.
+
+---
+
+## 6. Performance & Error Handling Strategy
+
+1. **Optimistic Updates**: Immediate UI feedback on mark-as-read and status transitions prior to network completion.
+2. **Network Resilience**: Automatic token rotation via Axios interceptors, request retry on transient network drops, and graceful fallback to cached TanStack query states.
+3. **Lazy Loading & Code Splitting**: Heavy components (Audit charts, Kanban boards, and Modals) are structured with granular component tree separation for instantaneous route transitions.
+4. **Strict Type Safety**: Full TypeScript schemas aligned directly with OpenAPI specifications.
+

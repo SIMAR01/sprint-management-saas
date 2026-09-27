@@ -30,6 +30,9 @@ const KanbanBoard = React.lazy(() =>
 const NotificationInbox = React.lazy(() =>
   import('./features/notifications/components/NotificationInbox').then((m) => ({ default: m.NotificationInbox }))
 );
+const AdminAuditDashboard = React.lazy(() =>
+  import('./features/admin/components/AdminAuditDashboard').then((m) => ({ default: m.AdminAuditDashboard }))
+);
 
 // Loader component for Route Suspense
 const FullScreenLoader: React.FC = () => (
@@ -50,6 +53,21 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
   }
 
   return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />;
+};
+
+// Guard component to enforce admin-only access
+const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, isAuthenticated, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <FullScreenLoader />;
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return user?.role === 'admin' ? <>{children}</> : <Navigate to="/dashboard" replace />;
 };
 
 // Guard component to prevent authenticated users from accessing login/signup
@@ -91,6 +109,14 @@ export const App: React.FC = () => {
               >
                 <Route index element={<WorkspaceDashboard />} />
                 <Route path="inbox" element={<NotificationInbox />} />
+                <Route
+                  path="admin/audit"
+                  element={
+                    <AdminRoute>
+                      <AdminAuditDashboard />
+                    </AdminRoute>
+                  }
+                />
                 <Route path="projects/:projectId/tasks" element={<KanbanBoard />} />
               </Route>
 

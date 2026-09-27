@@ -10,6 +10,7 @@ import {
   X,
   Bell,
   ExternalLink,
+  Shield,
 } from 'lucide-react';
 import { NotificationDropdown } from '../../notifications/components/NotificationDropdown';
 import {
@@ -65,6 +66,16 @@ export const DashboardLayout: React.FC = () => {
       icon: Inbox,
       badge: unreadCount,
     },
+    ...(user?.role === 'admin'
+      ? [
+          {
+            label: 'Admin Audit Console',
+            to: '/dashboard/admin/audit',
+            icon: Shield,
+            badge: undefined,
+          },
+        ]
+      : []),
   ];
 
   return (
