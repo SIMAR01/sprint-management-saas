@@ -14,7 +14,6 @@ import {
   Loader2,
   Trash2,
   AlertTriangle,
-  LogOut,
   Calendar,
   Network
 } from 'lucide-react';
@@ -74,18 +73,10 @@ export const SessionModal: React.FC<SessionModalProps> = ({ isOpen, onClose }) =
     logoutSessionMutation.mutate(sessionId);
   };
 
-  const handleEvictAll = () => {
-    if (window.confirm('Are you sure you want to terminate all other sessions? This will log you out from all other devices.')) {
-      setErrorMsg(null);
-      logoutAllMutation.mutate();
-    }
-  };
-
   // Helper to resolve device icons
   const getDeviceIcon = (session: Session) => {
     const deviceType = session.device?.toLowerCase() || '';
     const osType = session.os?.toLowerCase() || '';
-    const browserType = session.browser?.toLowerCase() || '';
 
     if (deviceType.includes('phone') || deviceType.includes('mobile') || osType.includes('android') || osType.includes('ios')) {
       return <Smartphone className="w-5 h-5 text-violet-400" />;

@@ -22,9 +22,7 @@ import {
   X,
   Search,
   Clock,
-  Shield,
   Loader2,
-  ArrowRight,
   UserMinus,
   AlertCircle,
   History,
@@ -161,7 +159,7 @@ export const WorkspaceDashboard: React.FC = () => {
       removeMutation.mutate(
         { projectId: selectedProject.projectId, userId },
         {
-          onSuccess: (data) => {
+          onSuccess: () => {
             // Update selected project members state to keep modal sync'd
             setSelectedProject((prev) => {
               if (!prev) return null;

@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { LoginForm } from './LoginForm';
 import { SignupForm } from './SignupForm';
-import { ShieldCheck } from 'lucide-react';
 
 export const AuthLayout: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'login' | 'signup'>('login');

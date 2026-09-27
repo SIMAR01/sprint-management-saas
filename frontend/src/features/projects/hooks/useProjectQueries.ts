@@ -101,7 +101,7 @@ export const useCreateWorkspaceMutation = (onSuccessCallback?: () => void) => {
 
       return { previousWorkspaces };
     },
-    onError: (err, newWorkspace, context) => {
+    onError: (_err, _newWorkspace, context) => {
       if (context?.previousWorkspaces) {
         queryClient.setQueryData(["workspaces"], context.previousWorkspaces);
       }
@@ -149,7 +149,7 @@ export const useUpdateWorkspaceMutation = (onSuccessCallback?: () => void) => {
 
       return { previousWorkspaces };
     },
-    onError: (err, updatedWorkspace, context) => {
+    onError: (_err, _updatedWorkspace, context) => {
       if (context?.previousWorkspaces) {
         queryClient.setQueryData(["workspaces"], context.previousWorkspaces);
       }
@@ -157,7 +157,7 @@ export const useUpdateWorkspaceMutation = (onSuccessCallback?: () => void) => {
     onSuccess: () => {
       if (onSuccessCallback) onSuccessCallback();
     },
-    onSettled: (data, error, variables) => {
+    onSettled: (_data, _error, variables) => {
       queryClient.invalidateQueries({ queryKey: ["workspaces"] });
       queryClient.invalidateQueries({ queryKey: ["project-activity", variables.projectId] });
     },
@@ -186,7 +186,7 @@ export const useDeleteWorkspaceMutation = (onSuccessCallback?: () => void) => {
 
       return { previousWorkspaces };
     },
-    onError: (err, projectId, context) => {
+    onError: (_err, _projectId, context) => {
       if (context?.previousWorkspaces) {
         queryClient.setQueryData(["workspaces"], context.previousWorkspaces);
       }
@@ -218,7 +218,7 @@ export const useInviteMemberMutation = (onSuccessCallback?: () => void) => {
       );
       return response.data;
     },
-    onSuccess: (data, variables) => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["workspaces"] });
       queryClient.invalidateQueries({ queryKey: ["project-activity", variables.projectId] });
       if (onSuccessCallback) onSuccessCallback();
@@ -244,7 +244,7 @@ export const useRemoveMemberMutation = (onSuccessCallback?: () => void) => {
       );
       return response.data;
     },
-    onSuccess: (data, variables) => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["workspaces"] });
       queryClient.invalidateQueries({ queryKey: ["project-activity", variables.projectId] });
       if (onSuccessCallback) onSuccessCallback();

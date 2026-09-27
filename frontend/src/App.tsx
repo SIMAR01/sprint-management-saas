@@ -27,6 +27,9 @@ const WorkspaceDashboard = React.lazy(() =>
 const KanbanBoard = React.lazy(() =>
   import('./features/tasks/components/KanbanBoard').then((m) => ({ default: m.KanbanBoard }))
 );
+const NotificationInbox = React.lazy(() =>
+  import('./features/notifications/components/NotificationInbox').then((m) => ({ default: m.NotificationInbox }))
+);
 
 // Loader component for Route Suspense
 const FullScreenLoader: React.FC = () => (
@@ -87,6 +90,7 @@ export const App: React.FC = () => {
                 }
               >
                 <Route index element={<WorkspaceDashboard />} />
+                <Route path="inbox" element={<NotificationInbox />} />
                 <Route path="projects/:projectId/tasks" element={<KanbanBoard />} />
               </Route>
 

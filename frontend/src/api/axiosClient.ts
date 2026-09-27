@@ -1,4 +1,4 @@
-import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
+import axios, { AxiosError } from 'axios';
 
 // In-memory access token storage to prevent XSS
 let inMemoryToken = '';

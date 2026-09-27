@@ -3,12 +3,12 @@ import { v4 as uuidv4 } from "uuid";
 import { axiosClient } from "../../../api/axiosClient";
 import {
   Task,
-  TaskStatus,
   PaginatedTasksResponse,
   SingleTaskResponse,
   CreateTaskPayload,
-  UpdateTaskStatusPayload,
   UpdateTaskPayload,
+  FileUploadResponse,
+  DeleteAttachmentPayload,
 } from "../types/task.types";
 
 const generateIdempotencyKey = (prefix: string) => `${prefix}-${uuidv4()}`;
@@ -48,10 +48,68 @@ export const useTaskEventsQuery = (projectId: string, taskId: string, enabled: b
   });
 };
 
-// ─── MUTATIONS ───────────────────────────────────────────────────────────────
+// ─── FILE UPLOAD & ATTACHMENT MUTATIONS ──────────────────────────────────────
 
 /**
- * Creates a new task with optimistic caching.
+ * Mutation to upload single or multiple files (images, PDFs, demo videos) directly
+ * to Cloudinary via POST /projects/:projectId/tasks/upload.
+ */
+export const useUploadTaskAttachmentsMutation = (projectId: string) => {
+  return useMutation({
+    mutationFn: async (files: File[]) => {
+      const formData = new FormData();
+      if (files.length === 1) {
+        formData.append("file", files[0]);
+      } else {
+        files.forEach((file) => {
+          formData.append("files", file);
+        });
+      }
+
+      const response = await axiosClient.post<FileUploadResponse>(
+        `/projects/${projectId}/tasks/upload`,
+        formData,
+        {
+          headers: {
+            "Content-Type": "multipart/form-data",
+          },
+        }
+      );
+      return response.data.data;
+    },
+  });
+};
+
+/**
+ * Mutation to delete an attachment file from Cloudinary and optionally detach from Task.
+ */
+export const useDeleteTaskAttachmentMutation = (projectId: string) => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (payload: DeleteAttachmentPayload) => {
+      const response = await axiosClient.delete<{
+        statusCode: number;
+        data: any;
+        message: string;
+      }>(`/projects/${projectId}/tasks/attachments`, {
+        data: payload,
+      });
+      return response.data.data;
+    },
+    onSuccess: (_data, variables) => {
+      if (variables.taskId) {
+        queryClient.invalidateQueries({ queryKey: ["project-tasks", projectId] });
+        queryClient.invalidateQueries({ queryKey: ["task-events", projectId, variables.taskId] });
+      }
+    },
+  });
+};
+
+// ─── TASK MUTATIONS ─────────────────────────────────────────────────────────
+
+/**
+ * Creates a new task with optimistic caching, attachment URLs, and video URL.
  */
 export const useCreateTaskMutation = (projectId: string) => {
   const queryClient = useQueryClient();
@@ -80,6 +138,8 @@ export const useCreateTaskMutation = (projectId: string) => {
         description: newTaskParams.description,
         assigneeId: newTaskParams.assigneeId,
         status: newTaskParams.status || "todo",
+        images: newTaskParams.images || [],
+        videoUrl: newTaskParams.videoUrl || null,
         isDeleted: false,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -92,23 +152,23 @@ export const useCreateTaskMutation = (projectId: string) => {
 
       return { previousTasks };
     },
-    onError: (err, variables, context) => {
+    onError: (_err, _variables, context) => {
       if (context?.previousTasks) {
         queryClient.setQueryData(["project-tasks", projectId], context.previousTasks);
       }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["project-tasks", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["project-activity", projectId] });
     },
     onSettled: () => {
-      // Background refetch to ensure true consistency with the server DB
       queryClient.invalidateQueries({ queryKey: ["project-tasks", projectId] });
     },
   });
 };
 
 /**
- * Updates a task (title, description, assignee, status) with robust optimistic caching.
+ * Updates a task (title, description, assignee, status, images, videoUrl) with optimistic caching.
  */
 export const useUpdateTaskMutation = (projectId: string) => {
   const queryClient = useQueryClient();
@@ -139,17 +199,17 @@ export const useUpdateTaskMutation = (projectId: string) => {
 
       return { previousTasks };
     },
-    onError: (err, variables, context) => {
+    onError: (_err, _variables, context) => {
       if (context?.previousTasks) {
         queryClient.setQueryData(["project-tasks", projectId], context.previousTasks);
       }
     },
-    onSuccess: (data, variables) => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["project-tasks", projectId] });
       queryClient.invalidateQueries({ queryKey: ["task-events", projectId, variables.taskId] });
       queryClient.invalidateQueries({ queryKey: ["project-activity", projectId] });
     },
-    onSettled: (data, error, variables) => {
+    onSettled: (_data, _error, variables) => {
       queryClient.invalidateQueries({ queryKey: ["project-tasks", projectId] });
       queryClient.invalidateQueries({ queryKey: ["task-events", projectId, variables.taskId] });
       queryClient.invalidateQueries({ queryKey: ["project-activity", projectId] });
@@ -183,13 +243,14 @@ export const useDeleteTaskMutation = (projectId: string) => {
 
       return { previousTasks };
     },
-    onError: (err, variables, context) => {
+    onError: (_err, _variables, context) => {
       if (context?.previousTasks) {
         queryClient.setQueryData(["project-tasks", projectId], context.previousTasks);
       }
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["project-tasks", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["project-activity", projectId] });
     },
   });
 };
@@ -221,7 +282,7 @@ export const useBulkDeleteTasksMutation = (projectId: string) => {
 
       return { previousTasks };
     },
-    onError: (err, variables, context) => {
+    onError: (_err, _variables, context) => {
       if (context?.previousTasks) {
         queryClient.setQueryData(["project-tasks", projectId], context.previousTasks);
       }

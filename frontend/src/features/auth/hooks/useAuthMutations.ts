@@ -148,7 +148,7 @@ export const useLogoutSessionMutation = (
   onErrorCallback?: (message: string) => void
 ) => {
   const queryClient = useQueryClient();
-  const { logout, user } = useAuth();
+  const { logout } = useAuth();
   const navigate = useNavigate();
 
   return useMutation({
@@ -176,7 +176,7 @@ export const useLogoutSessionMutation = (
       // Return a context object with the snapshotted value
       return { previousSessions };
     },
-    onError: (err: any, sessionId, context) => {
+    onError: (err: any, _sessionId, context) => {
       // Rollback to the previous value if mutation fails
       if (context?.previousSessions) {
         queryClient.setQueryData(['sessions'], context.previousSessions);
@@ -187,7 +187,7 @@ export const useLogoutSessionMutation = (
         onErrorCallback(errorMsg);
       }
     },
-    onSuccess: (result, sessionId, context) => {
+    onSuccess: (_result, sessionId, context) => {
       // Find the session that was terminated in our captured list to see if it was the current one
       const previousSessions = context?.previousSessions || [];
       const sessionToTerminate = previousSessions.find((s) => s.sessionId === sessionId);
