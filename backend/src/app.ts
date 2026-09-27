@@ -16,7 +16,7 @@ app.use(correlationMiddleware);
 // Global Middlewares
 app.use(
   cors({
-    origin: env.CORS_ORIGIN,
+    origin: env.NODE_ENV === "production" ? env.CORS_ORIGIN : "http://localhost:3000",
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization", "x-idempotency-key", "x-correlation-id"],
